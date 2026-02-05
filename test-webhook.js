@@ -23,7 +23,7 @@ console.log('📝 Payload:', JSON.stringify(payload));
 axios.post(WEBHOOK_URL, payload, {
   headers: {
     'Content-Type': 'application/json',
-    'X-Fireflies-Signature': signature
+    'x-hub-signature': signature
   }
 })
 .then(response => {
