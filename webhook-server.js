@@ -11,8 +11,12 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const CLAUDE_AGENT_URL = process.env.CLAUDE_AGENT_URL || 'http://localhost:8000';
 
-// Parse JSON bodies
-app.use(express.json());
+// Parse JSON bodies and preserve raw body for signature verification
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
 
 // Mount Notion API bridge for Claude agent to use
 app.use('/api', notionApiBridge);
@@ -23,7 +27,7 @@ const WEBHOOK_SECRET = process.env.FIREFLY_WEBHOOK_SECRET;
 /**
  * Verify the webhook signature from Fireflies
  */
-function verifySignature(payload, signature) {
+function verifySignature(rawBody, signature) {
   if (!WEBHOOK_SECRET) {
     console.log('No webhook secret configured, skipping verification');
     return true;
@@ -37,7 +41,7 @@ function verifySignature(payload, signature) {
 
   const expectedSignature = crypto
     .createHmac('sha256', WEBHOOK_SECRET)
-    .update(JSON.stringify(payload))
+    .update(rawBody)
     .digest('hex');
 
   // Ensure both buffers have same length before comparing
@@ -78,7 +82,7 @@ app.post('/webhook/fireflies', async (req, res) => {
   console.log('========================================\n');
 
   // Verify signature if secret is configured
-  if (WEBHOOK_SECRET && !verifySignature(payload, signature)) {
+  if (WEBHOOK_SECRET && !verifySignature(req.rawBody, signature)) {
     console.error('Invalid webhook signature');
     return res.status(401).json({ error: 'Invalid signature' });
   }
