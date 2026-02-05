@@ -28,47 +28,22 @@ const WEBHOOK_SECRET = process.env.FIREFLY_WEBHOOK_SECRET;
  * Verify the webhook signature from Fireflies
  */
 function verifySignature(rawBody, signature) {
-  console.log('\n=== Signature Verification Debug ===');
-  console.log('Webhook secret configured:', !!WEBHOOK_SECRET);
-  console.log('Webhook secret (first 8 chars):', WEBHOOK_SECRET ? WEBHOOK_SECRET.substring(0, 8) + '...' : 'none');
-  console.log('Webhook secret length:', WEBHOOK_SECRET ? WEBHOOK_SECRET.length : 0);
-
   if (!WEBHOOK_SECRET) {
-    console.log('No webhook secret configured, skipping verification');
     return true;
   }
 
-  // If no signature provided, fail verification when secret is configured
   if (!signature) {
-    console.log('No signature provided in request header (x-hub-signature)');
-    console.log('=== End Signature Debug ===\n');
     return false;
   }
 
-  console.log('Received signature (raw):', signature);
-
-  // Strip the 'sha256=' prefix if present (Fireflies sends it this way)
   const cleanSignature = signature.startsWith('sha256=') ? signature.slice(7) : signature;
-
-  console.log('Received signature (cleaned):', cleanSignature);
-  console.log('Received signature length:', cleanSignature.length);
-  console.log('Raw body exists:', !!rawBody);
-  console.log('Raw body length:', rawBody ? rawBody.length : 0);
-  console.log('Raw body preview:', rawBody ? rawBody.substring(0, 150) + '...' : 'empty');
 
   const expectedSignature = crypto
     .createHmac('sha256', WEBHOOK_SECRET)
     .update(rawBody)
     .digest('hex');
 
-  console.log('Expected signature:', expectedSignature);
-  console.log('Expected signature length:', expectedSignature.length);
-  console.log('Signatures match:', cleanSignature === expectedSignature);
-
-  // Ensure both buffers have same length before comparing
   if (cleanSignature.length !== expectedSignature.length) {
-    console.log('FAILED: Length mismatch! Received:', cleanSignature.length, 'Expected:', expectedSignature.length);
-    console.log('=== End Signature Debug ===\n');
     return false;
   }
 
@@ -76,9 +51,6 @@ function verifySignature(rawBody, signature) {
     Buffer.from(cleanSignature),
     Buffer.from(expectedSignature)
   );
-
-  console.log('Signature valid:', isValid);
-  console.log('=== End Signature Debug ===\n');
 
   return isValid;
 }
@@ -102,23 +74,13 @@ app.post('/webhook/fireflies', async (req, res) => {
   const signature = req.headers['x-hub-signature'];
   const payload = req.body;
 
-  console.log('\n========================================');
-  console.log('Received Fireflies webhook');
-  console.log('Event Type:', payload.eventType);
-  console.log('Meeting ID:', payload.meetingId);
-  console.log('Client Reference ID:', payload.clientReferenceId);
-  console.log('========================================\n');
-
-  // Verify signature if secret is configured
   if (WEBHOOK_SECRET && !verifySignature(req.rawBody, signature)) {
     console.error('Invalid webhook signature');
     return res.status(401).json({ error: 'Invalid signature' });
   }
 
-  // Only process transcription completed events
   if (payload.eventType === 'Transcription completed') {
     try {
-      // Step 1: Fetch the transcript from Fireflies
       console.log('Fetching transcript from Fireflies...');
       const transcript = await getTranscript(payload.meetingId);
 
@@ -128,7 +90,6 @@ app.post('/webhook/fireflies', async (req, res) => {
 
       console.log(`Fetched transcript: ${transcript.title}`);
 
-      // Step 2: Send to Claude Agent for intelligent processing
       console.log('Sending transcript to Claude Agent...');
       const agentResponse = await axios.post(
         `${CLAUDE_AGENT_URL}/process-transcript`,
@@ -151,8 +112,7 @@ app.post('/webhook/fireflies', async (req, res) => {
     } catch (error) {
       console.error('Error processing transcript:', error.message);
 
-      // Check if it's a connection error to Claude Agent
-      if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
         console.error('Claude Agent is not running. Please start it with: npm run agent');
         return res.status(503).json({
           error: 'Claude Agent unavailable',
