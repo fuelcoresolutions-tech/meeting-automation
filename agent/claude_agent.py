@@ -8,7 +8,8 @@ from prompts.system_prompt import SYSTEM_PROMPT
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-NOTION_API_BASE = os.getenv("NOTION_API_BASE", "http://localhost:3000")
+# Railway sets PORT=8080 for webhook server, default to that
+NOTION_API_BASE = os.getenv("NOTION_API_BASE", "http://localhost:8080")
 
 # Define tools for Claude API (function calling)
 TOOLS = [
