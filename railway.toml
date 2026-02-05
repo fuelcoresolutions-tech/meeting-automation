@@ -3,5 +3,6 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+startCommand = "npm run dev"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
