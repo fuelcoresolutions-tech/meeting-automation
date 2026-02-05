@@ -34,5 +34,5 @@ RUN chmod +x /app/start-simple.sh
 # Expose port
 EXPOSE 3000
 
-# Use the simple start script
-CMD ["/app/start-simple.sh"]
+# Use shell wrapper for Railway compatibility
+CMD ["/bin/sh", "-c", "exec /app/start-simple.sh"]
