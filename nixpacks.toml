@@ -1,11 +1,12 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "python311", "python311Packages.pip"]
+nixPkgs = ["nodejs_20", "python311", "python311Packages.pip", "python311Packages.virtualenv"]
 
 [phases.install]
 cmds = [
     "npm install",
-    "cd agent && pip install -r requirements.txt"
+    "python -m venv /app/venv",
+    ". /app/venv/bin/activate && cd agent && pip install -r requirements.txt"
 ]
 
 [start]
-cmd = "(cd agent && python -m uvicorn main:app --host 127.0.0.1 --port 8000 &) && sleep 2 && node webhook-server.js"
+cmd = "(. /app/venv/bin/activate && cd agent && python -m uvicorn main:app --host 127.0.0.1 --port 8000 &) && sleep 3 && node webhook-server.js"

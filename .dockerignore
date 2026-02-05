@@ -1,0 +1,12 @@
+node_modules
+__pycache__
+*.pyc
+.venv
+venv
+.env
+.git
+.gitignore
+*.md
+.DS_Store
+check-*.js
+add-task.js
