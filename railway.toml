@@ -3,5 +3,6 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+startCommand = "/bin/sh -c 'exec /app/start-simple.sh'"
 healthcheckPath = "/health"
 healthcheckTimeout = 30

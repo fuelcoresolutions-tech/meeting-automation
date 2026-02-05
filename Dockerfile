@@ -34,5 +34,5 @@ RUN chmod +x /app/start-simple.sh
 # Expose port
 EXPOSE 3000
 
-# Use ENTRYPOINT for Railway compatibility
-ENTRYPOINT ["/app/start-simple.sh"]
+# Simple CMD that Railway can parse
+CMD /app/start-simple.sh
