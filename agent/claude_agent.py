@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, create_sdk_mcp_server
+from claude_agent_sdk import ClaudeAgentOptions, query, create_sdk_mcp_server, AssistantMessage, TextBlock
 from tools.notion_tools import (
     get_projects,
     create_meeting_note,
@@ -80,8 +80,8 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
         key_points_text = 'No key points available'
 
     # Format transcript with smart chunking for token limits
-    # Estimate ~4 chars per token, aim for ~50k tokens max for transcript (~200k chars)
-    MAX_TRANSCRIPT_CHARS = 150000
+    # Keep it small to avoid OOM in containers (~10k tokens max = ~40k chars)
+    MAX_TRANSCRIPT_CHARS = 40000
     transcript_lines = []
     total_chars = 0
     truncated = False
@@ -137,7 +137,7 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
 6. Provide a summary of what was created
 """
 
-    # Configure the agent
+    # Configure the agent - use query() for simpler one-off tasks (lower memory)
     options = ClaudeAgentOptions(
         model=os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
         mcp_servers={"notion": notion_server},
@@ -149,8 +149,8 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
             "mcp__notion__create_project"
         ],
         system_prompt=SYSTEM_PROMPT,
-        max_turns=15,
-        permission_mode="acceptEdits"
+        max_turns=10,  # Reduced to limit resource usage
+        permission_mode="bypassPermissions"  # Server environment - no interactive prompts
     )
 
     results = {
@@ -163,17 +163,15 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
     }
 
     try:
-        async with ClaudeSDKClient(options=options) as client:
-            await client.query(prompt)
+        # Use query() instead of ClaudeSDKClient - simpler and more memory efficient
+        async for msg in query(prompt=prompt, options=options):
+            results["messages"].append(str(msg))
 
-            async for msg in client.receive_response():
-                results["messages"].append(str(msg))
-
-                # Extract text content for summary
-                if hasattr(msg, 'content'):
-                    for block in msg.content:
-                        if hasattr(block, 'text'):
-                            results["summary"] = block.text
+            # Extract text content for summary
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        results["summary"] = block.text
 
         results["success"] = True
         print(f"Successfully processed meeting: {transcript_data.get('title')}")
@@ -181,5 +179,7 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
     except Exception as e:
         results["error"] = str(e)
         print(f"Error processing transcript: {e}")
+        import traceback
+        traceback.print_exc()
 
     return results

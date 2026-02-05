@@ -5,4 +5,10 @@ dockerfilePath = "Dockerfile"
 [deploy]
 startCommand = "/bin/sh -c 'exec /app/start-simple.sh'"
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 300
+numReplicas = 1
+
+# Claude Agent SDK needs at least 2GB RAM
+[deploy.resources]
+memory = "2GB"
+cpu = 1
