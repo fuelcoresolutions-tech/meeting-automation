@@ -28,7 +28,7 @@ class TranscriptSummary(BaseModel):
 
 
 class Sentence(BaseModel):
-    speaker_name: str
+    speaker_name: Optional[str] = None
     text: str
 
 
