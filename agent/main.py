@@ -35,9 +35,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 class TranscriptSummary(BaseModel):
     overview: Optional[str] = None
-    action_items: Optional[List[str]] = []
-    shorthand_bullet: Optional[List[str]] = []
-    keywords: Optional[List[str]] = []
+    action_items: Optional[Union[List[str], str]] = None  # Fireflies returns string, not list
+    shorthand_bullet: Optional[Union[List[str], str]] = None  # Fireflies returns string, not list
+    keywords: Optional[Union[List[str], str]] = None  # Can be list or string
 
 
 class Sentence(BaseModel):

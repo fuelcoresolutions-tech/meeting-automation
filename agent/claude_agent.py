@@ -63,24 +63,49 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
     key_points = summary.get('shorthand_bullet', [])
     sentences = transcript_data.get('sentences', [])
 
-    # Format action items
-    action_items_text = '\n'.join(f"- {item}" for item in action_items) if action_items else 'No action items identified'
+    # Format action items (handle both string and list formats from Fireflies)
+    if isinstance(action_items, str):
+        action_items_text = action_items if action_items.strip() else 'No action items identified'
+    elif isinstance(action_items, list) and action_items:
+        action_items_text = '\n'.join(f"- {item}" for item in action_items)
+    else:
+        action_items_text = 'No action items identified'
 
-    # Format key points
-    key_points_text = '\n'.join(f"- {point}" for point in key_points) if key_points else 'No key points available'
+    # Format key points (handle both string and list formats from Fireflies)
+    if isinstance(key_points, str):
+        key_points_text = key_points if key_points.strip() else 'No key points available'
+    elif isinstance(key_points, list) and key_points:
+        key_points_text = '\n'.join(f"- {point}" for point in key_points)
+    else:
+        key_points_text = 'No key points available'
 
-    # Format transcript (limit to first 100 sentences to avoid token limits)
+    # Format transcript with smart chunking for token limits
+    # Estimate ~4 chars per token, aim for ~50k tokens max for transcript (~200k chars)
+    MAX_TRANSCRIPT_CHARS = 150000
     transcript_lines = []
-    for s in sentences[:100]:
-        speaker = s.get('speaker_name', 'Unknown')
+    total_chars = 0
+    truncated = False
+
+    for s in sentences:
+        speaker = s.get('speaker_name') or 'Speaker'
         text = s.get('text', '')
-        transcript_lines.append(f"**{speaker}**: {text}")
+        line = f"**{speaker}**: {text}"
+
+        if total_chars + len(line) > MAX_TRANSCRIPT_CHARS:
+            truncated = True
+            break
+
+        transcript_lines.append(line)
+        total_chars += len(line) + 1  # +1 for newline
+
     transcript_text = '\n'.join(transcript_lines) if transcript_lines else 'No transcript available'
-    if len(sentences) > 100:
-        transcript_text += '\n... (transcript truncated for processing)'
+    if truncated:
+        transcript_text += f'\n\n... (transcript truncated - showing {len(transcript_lines)} of {len(sentences)} segments)'
 
     # Build the prompt
-    duration_mins = (transcript_data.get('duration', 0) or 0) // 60
+    # Fireflies returns duration in minutes (e.g., 0.5 = 30 seconds)
+    duration_raw = transcript_data.get('duration', 0) or 0
+    duration_mins = round(duration_raw) if duration_raw >= 1 else f"{int(duration_raw * 60)} seconds"
 
     prompt = f"""Process the following meeting transcript and create appropriate Notion entries:
 
