@@ -29,9 +29,10 @@ COPY . .
 
 # Make start script executable
 RUN chmod +x /app/start.sh
+RUN chmod +x /app/start-simple.sh
 
 # Expose port
 EXPOSE 3000
 
-# Start both services using the start script
-CMD ["/app/start.sh"]
+# Use the simple start script
+CMD ["/app/start-simple.sh"]
