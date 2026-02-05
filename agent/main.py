@@ -1,8 +1,9 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, field_validator
+from typing import Optional, List, Dict, Any, Union
+from datetime import datetime
 import logging
 import os
 import traceback
@@ -47,13 +48,24 @@ class Sentence(BaseModel):
 class TranscriptData(BaseModel):
     id: str
     title: str
-    date: Optional[str] = None
-    duration: Optional[int] = 0
+    date: Optional[Union[str, int, float]] = None
+    duration: Optional[float] = 0  # Fireflies returns duration as float (e.g., 0.5)
     summary: Optional[TranscriptSummary] = None
     sentences: Optional[List[Sentence]] = []
     transcript_url: Optional[str] = None
     organizer_email: Optional[str] = None
     participants: Optional[List[str]] = []
+
+    @field_validator('date', mode='before')
+    @classmethod
+    def convert_timestamp_to_string(cls, v):
+        """Convert numeric timestamp to ISO date string."""
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            # Assume milliseconds timestamp from Fireflies
+            return datetime.fromtimestamp(v / 1000).isoformat()
+        return str(v)
 
 
 class ProcessingResult(BaseModel):

@@ -65,6 +65,10 @@ export async function getTranscript(meetingId) {
     return transcript;
   } catch (error) {
     console.error('Error fetching transcript:', error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+    }
     throw error;
   }
 }
