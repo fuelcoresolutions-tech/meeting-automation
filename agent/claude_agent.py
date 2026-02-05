@@ -1,8 +1,12 @@
 import os
 import httpx
+import logging
 from datetime import datetime
 from anthropic import Anthropic
 from prompts.system_prompt import SYSTEM_PROMPT
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 NOTION_API_BASE = os.getenv("NOTION_API_BASE", "http://localhost:3000")
 
@@ -163,6 +167,7 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
                 return f"Unknown tool: {tool_name}"
 
         except Exception as e:
+            logger.error(f"Error executing {tool_name}: {str(e)}")
             return f"Error executing {tool_name}: {str(e)}"
 
 
@@ -275,7 +280,7 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
         # Agentic loop - keep calling until no more tool use
         max_iterations = 10
         for iteration in range(max_iterations):
-            print(f"Claude iteration {iteration + 1}...")
+            logger.info(f"Claude iteration {iteration + 1}...")
 
             response = client.messages.create(
                 model=os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
@@ -303,9 +308,9 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
             # Execute tools and add results
             tool_results = []
             for tool_use in tool_uses:
-                print(f"  Executing tool: {tool_use.name}")
+                logger.info(f"Executing tool: {tool_use.name} with input: {tool_use.input}")
                 result = await execute_tool(tool_use.name, tool_use.input)
-                print(f"    Result: {result[:100]}...")
+                logger.info(f"Tool result: {result[:200]}...")
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_use.id,
@@ -315,11 +320,11 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
             messages.append({"role": "user", "content": tool_results})
 
         results["success"] = True
-        print(f"Successfully processed meeting: {transcript_data.get('title')}")
+        logger.info(f"Successfully processed meeting: {transcript_data.get('title')}")
 
     except Exception as e:
         results["error"] = str(e)
-        print(f"Error processing transcript: {e}")
+        logger.error(f"Error processing transcript: {e}")
         import traceback
         traceback.print_exc()
 
