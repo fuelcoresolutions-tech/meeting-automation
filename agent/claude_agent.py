@@ -150,7 +150,7 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
         ],
         system_prompt=SYSTEM_PROMPT,
         max_turns=10,  # Reduced to limit resource usage
-        permission_mode="bypassPermissions"  # Server environment - no interactive prompts
+        permission_mode="acceptEdits"  # Auto-accept edits (bypassPermissions not allowed as root)
     )
 
     results = {
