@@ -33,5 +33,5 @@ RUN chmod +x /app/start.sh
 # Expose port
 EXPOSE 3000
 
-# Start webhook server (Railway will override with startCommand)
-CMD ["node", "webhook-server.js"]
+# Start both services using the start script
+CMD ["/app/start.sh"]
