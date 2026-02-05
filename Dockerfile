@@ -27,8 +27,11 @@ RUN . /app/venv/bin/activate && pip install --no-cache-dir -r agent/requirements
 # Copy all source code
 COPY . .
 
+# Make start script executable
+RUN chmod +x /app/start.sh
+
 # Expose port
 EXPOSE 3000
 
-# Start both services
-CMD ["/bin/bash", "-c", "(. /app/venv/bin/activate && cd agent && python -m uvicorn main:app --host 127.0.0.1 --port 8000 &) && sleep 3 && node webhook-server.js"]
+# Start both services using the startup script
+CMD ["bash", "/app/start.sh"]
