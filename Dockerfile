@@ -34,4 +34,4 @@ RUN chmod +x /app/start.sh
 EXPOSE 3000
 
 # Start both services using the startup script
-CMD ["bash", "/app/start.sh"]
+CMD /app/start.sh
