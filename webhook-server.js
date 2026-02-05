@@ -45,8 +45,13 @@ function verifySignature(rawBody, signature) {
     return false;
   }
 
-  console.log('Received signature:', signature);
-  console.log('Received signature length:', signature.length);
+  console.log('Received signature (raw):', signature);
+
+  // Strip the 'sha256=' prefix if present (Fireflies sends it this way)
+  const cleanSignature = signature.startsWith('sha256=') ? signature.slice(7) : signature;
+
+  console.log('Received signature (cleaned):', cleanSignature);
+  console.log('Received signature length:', cleanSignature.length);
   console.log('Raw body exists:', !!rawBody);
   console.log('Raw body length:', rawBody ? rawBody.length : 0);
   console.log('Raw body preview:', rawBody ? rawBody.substring(0, 150) + '...' : 'empty');
@@ -58,17 +63,17 @@ function verifySignature(rawBody, signature) {
 
   console.log('Expected signature:', expectedSignature);
   console.log('Expected signature length:', expectedSignature.length);
-  console.log('Signatures match:', signature === expectedSignature);
+  console.log('Signatures match:', cleanSignature === expectedSignature);
 
   // Ensure both buffers have same length before comparing
-  if (signature.length !== expectedSignature.length) {
-    console.log('FAILED: Length mismatch! Received:', signature.length, 'Expected:', expectedSignature.length);
+  if (cleanSignature.length !== expectedSignature.length) {
+    console.log('FAILED: Length mismatch! Received:', cleanSignature.length, 'Expected:', expectedSignature.length);
     console.log('=== End Signature Debug ===\n');
     return false;
   }
 
   const isValid = crypto.timingSafeEqual(
-    Buffer.from(signature),
+    Buffer.from(cleanSignature),
     Buffer.from(expectedSignature)
   );
 
