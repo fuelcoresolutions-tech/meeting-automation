@@ -33,5 +33,5 @@ RUN chmod +x /app/start.sh
 # Expose port
 EXPOSE 3000
 
-# Start both services inline (no external script)
-CMD bash -c ". /app/venv/bin/activate && cd /app/agent && python -m uvicorn main:app --host 127.0.0.1 --port 8000 & sleep 3 && cd /app && exec node webhook-server.js"
+# Start both services using npm script
+CMD ["npm", "run", "dev"]
