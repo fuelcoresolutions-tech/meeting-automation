@@ -8,8 +8,10 @@ from prompts.system_prompt import SYSTEM_PROMPT
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Railway sets PORT=8080 for webhook server, default to that
-NOTION_API_BASE = os.getenv("NOTION_API_BASE", "http://localhost:8080")
+# Railway sets PORT=8080 for webhook server
+# Use 127.0.0.1 instead of localhost for container compatibility
+NOTION_API_BASE = os.getenv("NOTION_API_BASE", "http://127.0.0.1:8080")
+logger.info(f"NOTION_API_BASE configured as: {NOTION_API_BASE}")
 
 # Define tools for Claude API (function calling)
 TOOLS = [
@@ -89,10 +91,13 @@ TOOLS = [
 
 async def execute_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a tool and return the result as a string."""
+    logger.info(f"Connecting to Notion API at: {NOTION_API_BASE}")
     async with httpx.AsyncClient() as client:
         try:
             if tool_name == "get_projects":
-                response = await client.get(f"{NOTION_API_BASE}/api/projects", timeout=30.0)
+                url = f"{NOTION_API_BASE}/api/projects"
+                logger.info(f"GET {url}")
+                response = await client.get(url, timeout=30.0)
                 projects = response.json()
                 if not projects:
                     return "No projects found in the database."
