@@ -29,13 +29,24 @@ function verifySignature(payload, signature) {
     return true;
   }
 
+  // If no signature provided, fail verification when secret is configured
+  if (!signature) {
+    console.log('No signature provided in request');
+    return false;
+  }
+
   const expectedSignature = crypto
     .createHmac('sha256', WEBHOOK_SECRET)
     .update(JSON.stringify(payload))
     .digest('hex');
 
+  // Ensure both buffers have same length before comparing
+  if (signature.length !== expectedSignature.length) {
+    return false;
+  }
+
   return crypto.timingSafeEqual(
-    Buffer.from(signature || ''),
+    Buffer.from(signature),
     Buffer.from(expectedSignature)
   );
 }
