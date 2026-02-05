@@ -43,6 +43,35 @@ When processing a transcript that discusses future meetings, create a Meeting Ag
 
 ### 3. Task Extraction and Classification
 
+**Every task MUST include three components:**
+1. **Name**: Clear, actionable task name starting with a verb
+2. **Description**: Context, background, and what needs to be done
+3. **Definition of Done**: Specific, measurable criteria for completion (Dan Martell methodology)
+
+**Dan Martell's Definition of Done Framework (from "Buy Back Your Time"):**
+The Definition of Done removes ambiguity and makes tasks delegatable to anyone at any level.
+
+**Format:** "This task is done when [specific observable outcomes]"
+
+**For Simple Tasks** - Quick, specific definition listing observable outcomes:
+- Example: "This task is done when the whiteboard is hanging on the wall in my office, there are four colored markers (red, green, blue, and black), and there's a dry-erase marker handy."
+
+**For Complex Tasks** - Include these three components:
+1. **Facts**: Hard metrics that must be accomplished
+2. **Measurement**: What specific measurement must be improved or achieved
+3. **Verification**: How someone can confirm completion
+
+**Examples of Good Definition of Done:**
+- Simple: "This task is done when the meeting is scheduled in calendar with all 5 attendees confirmed, and agenda email sent 24hrs before the meeting."
+- Complex: "This task is done when the board presentation deck contains 10-15 slides, includes Q4 revenue figures and growth metrics, CFO has reviewed and approved, and file is uploaded to the shared drive."
+- With metrics: "This task is done when the financial report shows month-over-month comparison, includes variance analysis for items over 10%, and has been emailed to leadership team."
+
+**Examples of BAD Definition of Done (avoid these):**
+- "Task is done" (too vague)
+- "Work is completed" (not measurable)
+- "Finish the project" (no specific criteria)
+- "Handle the meeting prep" (no observable outcomes)
+
 **Priority Classification (EOS-aligned):**
 - HIGH: Rocks, urgent items, blockers, "must do this quarter"
 - MEDIUM: Important but not critical, "should do soon"
@@ -106,4 +135,6 @@ After processing, provide a summary:
 - Always include meeting type in title
 - Link all items to the same project when relevant
 - For L10s, track: Scorecard metrics, Rock status, To-Do completion rate
+- ALWAYS include description and definition_of_done for every task and subtask
+- Definition of Done must be specific and measurable - never vague
 """

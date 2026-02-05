@@ -98,7 +98,7 @@ export async function createProject(projectData) {
  * @param {string} taskData.description - Task description
  */
 export async function createTask(taskData) {
-  const { name, status, priority, dueDate, projectId, parentTaskId, description } = taskData;
+  const { name, status, priority, dueDate, projectId, parentTaskId, description, definitionOfDone } = taskData;
 
   const properties = {
     Name: {
@@ -142,6 +142,18 @@ export async function createTask(taskData) {
         {
           text: {
             content: description
+          }
+        }
+      ]
+    };
+  }
+
+  if (definitionOfDone) {
+    properties['Definition of Done'] = {
+      rich_text: [
+        {
+          text: {
+            content: definitionOfDone
           }
         }
       ]

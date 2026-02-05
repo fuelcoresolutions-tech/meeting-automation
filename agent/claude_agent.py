@@ -43,34 +43,36 @@ TOOLS = [
     },
     {
         "name": "create_task",
-        "description": "Create a task in the Notion Tasks database. Can optionally link to a project.",
+        "description": "Create a task in the Notion Tasks database. Can optionally link to a project. Always include a description and definition of done.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Task name"},
-                "description": {"type": "string", "description": "Task description"},
+                "name": {"type": "string", "description": "Task name - clear and actionable"},
+                "description": {"type": "string", "description": "Task description - context, background, and what needs to be done"},
+                "definition_of_done": {"type": "string", "description": "Definition of Done - specific, measurable criteria that must be met for the task to be considered complete (Dan Martell style)"},
                 "priority": {"type": "string", "enum": ["High", "Medium", "Low"], "description": "Priority level"},
                 "due_date": {"type": "string", "description": "Due date (YYYY-MM-DD)"},
                 "status": {"type": "string", "enum": ["To Do", "In Progress", "Done"], "description": "Task status"},
                 "project_id": {"type": "string", "description": "Optional project ID to link to"}
             },
-            "required": ["name"]
+            "required": ["name", "description", "definition_of_done"]
         }
     },
     {
         "name": "create_subtask",
-        "description": "Create a subtask linked to a parent task.",
+        "description": "Create a subtask linked to a parent task. Always include a description and definition of done.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Subtask name"},
-                "description": {"type": "string", "description": "Subtask description"},
+                "name": {"type": "string", "description": "Subtask name - clear and actionable"},
+                "description": {"type": "string", "description": "Subtask description - context and what needs to be done"},
+                "definition_of_done": {"type": "string", "description": "Definition of Done - specific, measurable criteria that must be met for the subtask to be considered complete"},
                 "priority": {"type": "string", "enum": ["High", "Medium", "Low"]},
                 "due_date": {"type": "string", "description": "Due date (YYYY-MM-DD)"},
                 "parent_task_id": {"type": "string", "description": "Parent task ID"},
                 "project_id": {"type": "string", "description": "Project ID"}
             },
-            "required": ["name", "parent_task_id"]
+            "required": ["name", "parent_task_id", "description", "definition_of_done"]
         }
     },
     {
@@ -150,6 +152,7 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
                     json={
                         "name": tool_input.get("name"),
                         "description": tool_input.get("description"),
+                        "definitionOfDone": tool_input.get("definition_of_done"),
                         "priority": tool_input.get("priority", "Medium"),
                         "dueDate": tool_input.get("due_date"),
                         "status": tool_input.get("status", "To Do"),
@@ -166,6 +169,7 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
                     json={
                         "name": tool_input.get("name"),
                         "description": tool_input.get("description"),
+                        "definitionOfDone": tool_input.get("definition_of_done"),
                         "priority": tool_input.get("priority", "Medium"),
                         "dueDate": tool_input.get("due_date"),
                         "status": "To Do",
