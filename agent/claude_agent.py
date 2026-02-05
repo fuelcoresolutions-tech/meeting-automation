@@ -85,6 +85,27 @@ TOOLS = [
             },
             "required": ["name"]
         }
+    },
+    {
+        "name": "create_meeting_agenda",
+        "description": "Create a meeting agenda in Notion for upcoming meetings. Use when the transcript discusses a future meeting that needs planning. Follows EOS/Traction L10 meeting format.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Agenda title (e.g., 'L10 Meeting Agenda - Feb 26')"},
+                "meeting_date": {"type": "string", "description": "Date of the upcoming meeting (YYYY-MM-DD)"},
+                "meeting_type": {"type": "string", "enum": ["L10", "Quarterly", "Annual", "Same Page", "State of Company", "Other"], "description": "Type of meeting"},
+                "duration_minutes": {"type": "integer", "description": "Expected duration in minutes (L10=90, Quarterly=480)"},
+                "location": {"type": "string", "description": "Meeting location or virtual link"},
+                "facilitator": {"type": "string", "description": "Meeting facilitator name"},
+                "attendees": {"type": "array", "items": {"type": "string"}, "description": "List of attendees"},
+                "rocks_to_review": {"type": "array", "items": {"type": "string"}, "description": "Quarterly rocks/priorities to review"},
+                "known_issues": {"type": "array", "items": {"type": "string"}, "description": "Known issues for IDS discussion"},
+                "agenda_items": {"type": "array", "items": {"type": "string"}, "description": "Custom agenda items if not standard L10"},
+                "project_id": {"type": "string", "description": "Project ID to link to"}
+            },
+            "required": ["title", "meeting_date", "meeting_type"]
+        }
     }
 ]
 
@@ -168,6 +189,27 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
                 )
                 result = response.json()
                 return f"Created project '{tool_input.get('name')}' with ID: {result.get('id')}"
+
+            elif tool_name == "create_meeting_agenda":
+                response = await client.post(
+                    f"{NOTION_API_BASE}/api/agendas",
+                    json={
+                        "title": tool_input.get("title"),
+                        "meeting_date": tool_input.get("meeting_date"),
+                        "meeting_type": tool_input.get("meeting_type"),
+                        "duration_minutes": tool_input.get("duration_minutes", 90),
+                        "location": tool_input.get("location"),
+                        "facilitator": tool_input.get("facilitator"),
+                        "attendees": tool_input.get("attendees", []),
+                        "rocks_to_review": tool_input.get("rocks_to_review", []),
+                        "known_issues": tool_input.get("known_issues", []),
+                        "agenda_items": tool_input.get("agenda_items", []),
+                        "project_id": tool_input.get("project_id")
+                    },
+                    timeout=30.0
+                )
+                result = response.json()
+                return f"Created meeting agenda '{tool_input.get('title')}' for {tool_input.get('meeting_date')} (ID: {result.get('id')})"
 
             else:
                 return f"Unknown tool: {tool_name}"
