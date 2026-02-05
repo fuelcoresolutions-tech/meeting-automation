@@ -55,7 +55,14 @@ export async function getTranscript(meetingId) {
       throw new Error(response.data.errors[0].message);
     }
 
-    return response.data.data.transcript;
+    const transcript = response.data.data.transcript;
+    
+    // Convert timestamp to ISO date string if needed
+    if (transcript.date && typeof transcript.date === 'number') {
+      transcript.date = new Date(transcript.date).toISOString();
+    }
+
+    return transcript;
   } catch (error) {
     console.error('Error fetching transcript:', error.message);
     throw error;

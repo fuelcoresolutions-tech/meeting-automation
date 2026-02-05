@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import axios from 'axios';
 
-const WEBHOOK_SECRET = 'cffa50dc7d5248b68195e6cb70a222';
+const WEBHOOK_SECRET = '8c4b28f1dd2e4a618d7a88450e01b4e';
 const WEBHOOK_URL = 'https://meeting-automation-production.up.railway.app/webhook/fireflies';
 
 // Test payload
