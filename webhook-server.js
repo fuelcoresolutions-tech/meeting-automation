@@ -28,6 +28,11 @@ const WEBHOOK_SECRET = process.env.FIREFLY_WEBHOOK_SECRET;
  * Verify the webhook signature from Fireflies
  */
 function verifySignature(rawBody, signature) {
+  console.log('\n=== Signature Verification Debug ===');
+  console.log('Webhook secret configured:', !!WEBHOOK_SECRET);
+  console.log('Webhook secret (first 8 chars):', WEBHOOK_SECRET ? WEBHOOK_SECRET.substring(0, 8) + '...' : 'none');
+  console.log('Webhook secret length:', WEBHOOK_SECRET ? WEBHOOK_SECRET.length : 0);
+
   if (!WEBHOOK_SECRET) {
     console.log('No webhook secret configured, skipping verification');
     return true;
@@ -35,24 +40,42 @@ function verifySignature(rawBody, signature) {
 
   // If no signature provided, fail verification when secret is configured
   if (!signature) {
-    console.log('No signature provided in request');
+    console.log('No signature provided in request header (x-hub-signature)');
+    console.log('=== End Signature Debug ===\n');
     return false;
   }
+
+  console.log('Received signature:', signature);
+  console.log('Received signature length:', signature.length);
+  console.log('Raw body exists:', !!rawBody);
+  console.log('Raw body length:', rawBody ? rawBody.length : 0);
+  console.log('Raw body preview:', rawBody ? rawBody.substring(0, 150) + '...' : 'empty');
 
   const expectedSignature = crypto
     .createHmac('sha256', WEBHOOK_SECRET)
     .update(rawBody)
     .digest('hex');
 
+  console.log('Expected signature:', expectedSignature);
+  console.log('Expected signature length:', expectedSignature.length);
+  console.log('Signatures match:', signature === expectedSignature);
+
   // Ensure both buffers have same length before comparing
   if (signature.length !== expectedSignature.length) {
+    console.log('FAILED: Length mismatch! Received:', signature.length, 'Expected:', expectedSignature.length);
+    console.log('=== End Signature Debug ===\n');
     return false;
   }
 
-  return crypto.timingSafeEqual(
+  const isValid = crypto.timingSafeEqual(
     Buffer.from(signature),
     Buffer.from(expectedSignature)
   );
+
+  console.log('Signature valid:', isValid);
+  console.log('=== End Signature Debug ===\n');
+
+  return isValid;
 }
 
 /**
