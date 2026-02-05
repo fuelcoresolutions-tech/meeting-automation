@@ -148,18 +148,6 @@ export async function createTask(taskData) {
     };
   }
 
-  if (definitionOfDone) {
-    properties['Definition of Done'] = {
-      rich_text: [
-        {
-          text: {
-            content: definitionOfDone
-          }
-        }
-      ]
-    };
-  }
-
   if (projectId) {
     properties.Project = {
       relation: [
@@ -186,6 +174,26 @@ export async function createTask(taskData) {
     },
     properties
   };
+
+  // Add Definition of Done as page content (body) if provided
+  if (definitionOfDone) {
+    pageData.children = [
+      {
+        object: 'block',
+        type: 'heading_3',
+        heading_3: {
+          rich_text: [{ type: 'text', text: { content: 'Definition of Done' } }]
+        }
+      },
+      {
+        object: 'block',
+        type: 'paragraph',
+        paragraph: {
+          rich_text: [{ type: 'text', text: { content: definitionOfDone } }]
+        }
+      }
+    ];
+  }
 
   try {
     const response = await notion.pages.create(pageData);
