@@ -405,7 +405,8 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
 3. Analyze action items AND transcript to extract all tasks
 4. Group related tasks under parent tasks where appropriate
 5. Set priorities and deadlines based on context
-6. Provide a summary of what was created
+6. If this is a recurring meeting (L10, Quarterly, etc.) OR there are unresolved issues/incomplete to-dos/planned follow-ups, create a meeting agenda for the NEXT occurrence pre-populated with carry-over items. Skip the agenda if it was a one-off meeting with no follow-up needed.
+7. Provide a summary of what was created (notes, agenda if applicable, tasks)
 """
 
     results = {
