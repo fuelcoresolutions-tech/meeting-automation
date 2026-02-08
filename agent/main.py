@@ -166,3 +166,40 @@ async def process_transcript_sync(transcript: TranscriptData):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/cost-summary")
+async def get_cost_summary():
+    """Aggregate cost summary across all processed meetings."""
+    completed = [
+        entry["result"] for entry in processing_status.values()
+        if entry.get("status") == "completed" and entry.get("result")
+    ]
+
+    total_cost = 0.0
+    total_cache_savings = 0.0
+    by_method = {"standard": 0, "two_pass": 0}
+    by_model = {}
+
+    for result in completed:
+        cost = result.get("cost_analysis", {})
+        total_cost += cost.get("total_cost_usd", 0)
+        total_cache_savings += cost.get("cache_savings_usd", 0)
+
+        method = result.get("processing_method", "standard")
+        by_method[method] = by_method.get(method, 0) + 1
+
+        model = result.get("model_used", "unknown")
+        if model not in by_model:
+            by_model[model] = {"count": 0, "cost": 0.0}
+        by_model[model]["count"] += 1
+        by_model[model]["cost"] += cost.get("total_cost_usd", 0)
+
+    return {
+        "meetings_processed": len(completed),
+        "total_cost_usd": round(total_cost, 4),
+        "total_cache_savings_usd": round(total_cache_savings, 4),
+        "average_cost_per_meeting": round(total_cost / max(len(completed), 1), 4),
+        "by_processing_method": by_method,
+        "by_model": by_model,
+    }

@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from anthropic import Anthropic
 from prompts.system_prompt import SYSTEM_PROMPT
+from long_meeting_processor import process_long_meeting, estimate_tokens
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -12,6 +13,22 @@ logger = logging.getLogger(__name__)
 # Use 127.0.0.1 instead of localhost for container compatibility
 NOTION_API_BASE = os.getenv("NOTION_API_BASE", "http://127.0.0.1:8080")
 logger.info(f"NOTION_API_BASE configured as: {NOTION_API_BASE}")
+
+# Model configuration
+SONNET_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+HAIKU_MODEL = os.getenv("CLAUDE_HAIKU_MODEL", "claude-haiku-4-5-20251001")
+
+# Long meeting threshold (tokens)
+LONG_MEETING_THRESHOLD = int(os.getenv("LONG_MEETING_THRESHOLD_TOKENS", "10000"))
+
+# Cached system prompt for Anthropic prompt caching
+CACHED_SYSTEM = [
+    {
+        "type": "text",
+        "text": SYSTEM_PROMPT,
+        "cache_control": {"type": "ephemeral"}
+    }
+]
 
 # Define tools for Claude API (function calling)
 TOOLS = [
@@ -112,22 +129,39 @@ TOOLS = [
 ]
 
 
-async def execute_tool(tool_name: str, tool_input: dict) -> str:
-    """Execute a tool and return the result as a string."""
+async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = None) -> str:
+    """Execute a tool and return the result as a string.
+
+    Args:
+        projects_cache: Session-scoped dict for caching get_projects results.
+                        Pass the same dict across calls within one meeting.
+    """
     logger.info(f"Connecting to Notion API at: {NOTION_API_BASE}")
     async with httpx.AsyncClient() as client:
         try:
             if tool_name == "get_projects":
+                # Return cached result if available
+                if projects_cache is not None and "result" in projects_cache:
+                    logger.info("Using cached projects data")
+                    return projects_cache["result"]
+
                 url = f"{NOTION_API_BASE}/api/projects"
                 logger.info(f"GET {url}")
                 response = await client.get(url, timeout=30.0)
                 projects = response.json()
                 if not projects:
-                    return "No projects found in the database."
-                return f"Found {len(projects)} projects:\n" + "\n".join(
-                    f"- {p['name']} (ID: {p['id']}, Status: {p.get('status', 'Unknown')})"
-                    for p in projects
-                )
+                    result_str = "No projects found in the database."
+                else:
+                    result_str = f"Found {len(projects)} projects:\n" + "\n".join(
+                        f"- {p['name']} (ID: {p['id']}, Status: {p.get('status', 'Unknown')})"
+                        for p in projects
+                    )
+
+                # Cache for this session
+                if projects_cache is not None:
+                    projects_cache["result"] = result_str
+
+                return result_str
 
             elif tool_name == "create_meeting_note":
                 response = await client.post(
@@ -223,9 +257,41 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
             return f"Error executing {tool_name}: {str(e)}"
 
 
+def detect_meeting_complexity(transcript_data: dict) -> str:
+    """Determine meeting complexity for model selection.
+
+    Returns 'simple' or 'standard'.
+    """
+    duration = transcript_data.get('duration', 0) or 0
+    sentences = transcript_data.get('sentences', [])
+    summary = transcript_data.get('summary') or {}
+    action_items = summary.get('action_items', [])
+
+    action_count = 0
+    if isinstance(action_items, list):
+        action_count = len(action_items)
+    elif isinstance(action_items, str) and action_items.strip():
+        action_count = len(action_items.strip().split('\n'))
+
+    is_short = duration < 0.25  # Less than 15 minutes
+    few_sentences = len(sentences) < 50
+    few_actions = action_count < 3
+
+    if is_short and few_sentences and few_actions:
+        return "simple"
+    return "standard"
+
+
 async def process_meeting_transcript(transcript_data: dict) -> dict:
     """
-    Process a meeting transcript using Claude API directly.
+    Process a meeting transcript using Claude API with optimized token usage.
+
+    Optimizations:
+    - Two-pass processing for long meetings (>10k tokens): Haiku extracts, Sonnet creates
+    - Prompt caching: system prompt cached across agentic loop iterations
+    - Smart model selection: Haiku for simple meetings, Sonnet for standard
+    - Token usage tracking with cost calculation
+    - Session-scoped tool result caching
     """
     # Parse the meeting date
     date_str = transcript_data.get('date', '')
@@ -261,29 +327,55 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
     else:
         key_points_text = 'No key points available'
 
-    # Format transcript (limit to ~10k tokens = ~40k chars)
-    MAX_TRANSCRIPT_CHARS = 40000
-    transcript_lines = []
-    total_chars = 0
-    truncated = False
+    # Estimate total transcript tokens
+    full_transcript_text = '\n'.join(
+        f"**{s.get('speaker_name') or 'Speaker'}**: {s.get('text', '')}"
+        for s in sentences
+    )
+    transcript_tokens = estimate_tokens(full_transcript_text)
+    logger.info(f"Transcript size: {transcript_tokens} estimated tokens ({len(sentences)} segments)")
 
-    for s in sentences:
-        speaker = s.get('speaker_name') or 'Speaker'
-        text = s.get('text', '')
-        line = f"**{speaker}**: {text}"
-        if total_chars + len(line) > MAX_TRANSCRIPT_CHARS:
-            truncated = True
-            break
-        transcript_lines.append(line)
-        total_chars += len(line) + 1
+    # Initialize Anthropic client (shared across passes)
+    client = Anthropic()
 
-    transcript_text = '\n'.join(transcript_lines) if transcript_lines else 'No transcript available'
-    if truncated:
-        transcript_text += f'\n\n... (truncated - {len(transcript_lines)} of {len(sentences)} segments)'
+    # Determine processing method based on transcript length
+    processing_method = "standard"
+    haiku_extraction_cost = 0.0
+    haiku_usage = {"input_tokens": 0, "output_tokens": 0}
+
+    if transcript_tokens > LONG_MEETING_THRESHOLD:
+        # Two-pass processing: Haiku extracts, then Sonnet creates
+        processing_method = "two_pass"
+        logger.info(f"Long meeting detected: {transcript_tokens} tokens — using two-pass processing")
+
+        long_result = process_long_meeting(client, sentences)
+        haiku_extraction_cost = long_result["haiku_cost"]
+        haiku_usage = long_result["haiku_usage"]
+
+        transcript_text = (
+            f"This is a LONG meeting (~{transcript_tokens} tokens across "
+            f"{long_result['num_chunks']} segments).\n\n"
+            f"Below is the comprehensive extraction of ALL action items, decisions, "
+            f"and key points from the entire meeting:\n\n"
+            f"{long_result['extracted_content']}\n\n"
+            f"IMPORTANT: Process ALL items above. Nothing has been truncated."
+        )
+    else:
+        # Standard processing: send transcript directly
+        transcript_text = full_transcript_text if full_transcript_text else 'No transcript available'
 
     # Duration
     duration_raw = transcript_data.get('duration', 0) or 0
     duration_mins = round(duration_raw) if duration_raw >= 1 else f"{int(duration_raw * 60)} seconds"
+
+    # Detect complexity for model selection
+    complexity = detect_meeting_complexity(transcript_data)
+    if complexity == "simple":
+        selected_model = HAIKU_MODEL
+        logger.info(f"Meeting complexity: simple — using Haiku ({HAIKU_MODEL})")
+    else:
+        selected_model = SONNET_MODEL
+        logger.info(f"Meeting complexity: standard — using Sonnet ({SONNET_MODEL})")
 
     # Build prompt
     prompt = f"""Process this meeting transcript and create Notion entries:
@@ -322,24 +414,53 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
         "messages": [],
         "success": False,
         "error": None,
-        "summary": None
+        "summary": None,
+        "processing_method": processing_method,
+        "model_used": selected_model,
+        "complexity": complexity,
+        "transcript_tokens": transcript_tokens,
+        "token_usage": {
+            "total_input": 0,
+            "total_output": 0,
+            "cache_creation": 0,
+            "cache_read": 0,
+            "haiku_input": haiku_usage["input_tokens"],
+            "haiku_output": haiku_usage["output_tokens"],
+        }
     }
 
+    # Session-scoped cache for tool results
+    projects_cache = {}
+
     try:
-        client = Anthropic()
         messages = [{"role": "user", "content": prompt}]
 
         # Agentic loop - keep calling until no more tool use
         max_iterations = 10
         for iteration in range(max_iterations):
-            logger.info(f"Claude iteration {iteration + 1}...")
+            logger.info(f"Claude iteration {iteration + 1} ({selected_model})...")
 
             response = client.messages.create(
-                model=os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
+                model=selected_model,
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=CACHED_SYSTEM,
                 tools=TOOLS,
                 messages=messages
+            )
+
+            # Track token usage
+            usage = response.usage
+            results["token_usage"]["total_input"] += usage.input_tokens
+            results["token_usage"]["total_output"] += usage.output_tokens
+
+            cache_creation = getattr(usage, 'cache_creation_input_tokens', 0) or 0
+            cache_read = getattr(usage, 'cache_read_input_tokens', 0) or 0
+            results["token_usage"]["cache_creation"] += cache_creation
+            results["token_usage"]["cache_read"] += cache_read
+
+            logger.info(
+                f"  Tokens — in: {usage.input_tokens}, out: {usage.output_tokens}, "
+                f"cache_write: {cache_creation}, cache_read: {cache_read}"
             )
 
             # Process response
@@ -361,7 +482,7 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
             tool_results = []
             for tool_use in tool_uses:
                 logger.info(f"Executing tool: {tool_use.name} with input: {tool_use.input}")
-                result = await execute_tool(tool_use.name, tool_use.input)
+                result = await execute_tool(tool_use.name, tool_use.input, projects_cache)
                 logger.info(f"Tool result: {result[:200]}...")
                 tool_results.append({
                     "type": "tool_result",
@@ -372,7 +493,40 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
             messages.append({"role": "user", "content": tool_results})
 
         results["success"] = True
+
+        # Calculate cost
+        tu = results["token_usage"]
+        if selected_model == HAIKU_MODEL:
+            input_rate, output_rate = 1.0, 5.0
+            cache_write_rate = 1.25  # 1.25x input rate
+            cache_read_rate = 0.1    # 0.1x input rate
+        else:
+            input_rate, output_rate = 3.0, 15.0
+            cache_write_rate = 3.75
+            cache_read_rate = 0.3
+
+        input_cost = tu["total_input"] * input_rate / 1_000_000
+        output_cost = tu["total_output"] * output_rate / 1_000_000
+        cache_write_cost = tu["cache_creation"] * cache_write_rate / 1_000_000
+        cache_read_cost = tu["cache_read"] * cache_read_rate / 1_000_000
+        # Haiku extraction pass cost (already calculated)
+        total_cost = input_cost + output_cost + cache_write_cost + cache_read_cost + haiku_extraction_cost
+
+        # Estimate what cache_read tokens would have cost without caching
+        cache_savings = tu["cache_read"] * (input_rate - cache_read_rate) / 1_000_000
+
+        results["cost_analysis"] = {
+            "total_cost_usd": round(total_cost, 4),
+            "agentic_loop_cost": round(input_cost + output_cost + cache_write_cost + cache_read_cost, 4),
+            "haiku_extraction_cost": round(haiku_extraction_cost, 4),
+            "cache_savings_usd": round(cache_savings, 4),
+            "model_used": selected_model,
+            "processing_method": processing_method,
+        }
+
         logger.info(f"Successfully processed meeting: {transcript_data.get('title')}")
+        logger.info(f"  Cost: ${total_cost:.4f} (cache saved: ${cache_savings:.4f})")
+        logger.info(f"  Method: {processing_method} | Model: {selected_model} | Complexity: {complexity}")
 
     except Exception as e:
         results["error"] = str(e)
