@@ -58,58 +58,302 @@ router.post('/tasks', async (req, res) => {
   }
 });
 
-// Create a meeting note
+// ─── Notion Block Helpers ───────────────────────────────────────────
+
+function richText(content, bold = false) {
+  const rt = { type: 'text', text: { content: String(content ?? '') } };
+  if (bold) rt.annotations = { bold: true };
+  return rt;
+}
+
+function buildHeading(level, text) {
+  const key = `heading_${level}`;
+  return { object: 'block', type: key, [key]: { rich_text: [richText(text)] } };
+}
+
+function buildParagraph(segments) {
+  // segments can be a string or array of {text, bold?} objects
+  if (typeof segments === 'string') {
+    return {
+      object: 'block', type: 'paragraph',
+      paragraph: { rich_text: [richText(segments)] }
+    };
+  }
+  return {
+    object: 'block', type: 'paragraph',
+    paragraph: { rich_text: segments.map(s => richText(s.text, s.bold)) }
+  };
+}
+
+function buildDivider() {
+  return { object: 'block', type: 'divider', divider: {} };
+}
+
+function buildCallout(text, emoji = '📊') {
+  return {
+    object: 'block', type: 'callout',
+    callout: {
+      rich_text: [richText(text)],
+      icon: { type: 'emoji', emoji }
+    }
+  };
+}
+
+function buildTableRow(cells) {
+  return {
+    object: 'block', type: 'table_row',
+    table_row: {
+      cells: cells.map(cell => [richText(cell)])
+    }
+  };
+}
+
+function buildTable(headers, rows) {
+  return {
+    object: 'block', type: 'table',
+    table: {
+      table_width: headers.length,
+      has_column_header: true,
+      has_row_header: false,
+      children: [
+        buildTableRow(headers),
+        ...rows.map(row => buildTableRow(row))
+      ]
+    }
+  };
+}
+
+function buildToggle(title, childBlocks) {
+  return {
+    object: 'block', type: 'toggle',
+    toggle: {
+      rich_text: [richText(title)],
+      children: childBlocks
+    }
+  };
+}
+
+// ─── Meeting Note Section Builders ──────────────────────────────────
+
+function buildCompanyHeader(meetingType) {
+  const typeLabels = {
+    'L10': 'Level 10 Meeting Notes',
+    'Quarterly': 'Quarterly Meeting Notes',
+    'Annual': 'Annual Planning Notes',
+    'Same Page': 'Same Page Meeting Notes',
+    'State of Company': 'State of the Company Notes',
+    'Quarterly Conversation': 'Quarterly Conversation Notes',
+    'Other': 'Meeting Notes',
+    'General': 'Meeting Notes'
+  };
+  return [
+    buildHeading(1, 'FUEL CORE SOLUTIONS'),
+    buildParagraph([
+      { text: typeLabels[meetingType] || 'Meeting Notes', bold: false }
+    ]),
+    buildParagraph([
+      { text: 'EOS / Traction Framework', bold: false }
+    ]),
+    buildDivider()
+  ];
+}
+
+function buildMeetingInfoSection(info, date, durationSeconds) {
+  const blocks = [buildHeading(2, 'MEETING INFORMATION')];
+  const durationMins = durationSeconds ? Math.round(durationSeconds / 60) : null;
+  const rows = [];
+  if (date) rows.push(['Date', date]);
+  if (info.time) rows.push(['Time', info.time]);
+  if (durationMins) rows.push(['Duration', `~${durationMins} minutes`]);
+  if (info.location) rows.push(['Location', info.location]);
+  if (info.facilitator) rows.push(['Facilitator', info.facilitator]);
+  if (info.scribe) rows.push(['Scribe / Notes', info.scribe || 'Fireflies AI']);
+  if (info.attendees?.length) rows.push(['Attendees', info.attendees.join(', ')]);
+  if (rows.length) blocks.push(buildTable(['Field', 'Details'], rows));
+  return blocks;
+}
+
+function buildSegueSection(segue) {
+  const blocks = [buildDivider(), buildHeading(2, 'SEGUE — Good News')];
+  const rows = segue.map(s => [s.person, s.personal || '', s.professional || '']);
+  blocks.push(buildTable(['Person', 'Personal Good News', 'Professional Good News'], rows));
+  return blocks;
+}
+
+function buildScorecardSection(scorecard) {
+  const blocks = [buildDivider(), buildHeading(2, 'SCORECARD REVIEW')];
+  const rows = scorecard.map(s => [s.metric, s.owner, s.goal || '', s.actual || '', s.status]);
+  blocks.push(buildTable(['Metric', 'Owner', 'Goal', 'Actual', 'Status'], rows));
+  return blocks;
+}
+
+function buildRockReviewSection(rockReview) {
+  const blocks = [buildDivider(), buildHeading(2, 'ROCK REVIEW — 90-Day Priorities')];
+  const rows = rockReview.map(r => [r.rock, r.owner, r.due || '', r.status]);
+  blocks.push(buildTable(['Rock', 'Owner', 'Due', 'Status'], rows));
+  return blocks;
+}
+
+function buildTodoReviewSection(todoReview) {
+  const blocks = [buildDivider(), buildHeading(2, 'TO-DO LIST REVIEW')];
+  const rows = todoReview.items.map(t => [t.todo, t.owner, t.status]);
+  blocks.push(buildTable(['To-Do', 'Owner', 'Status'], rows));
+  if (todoReview.completion_rate) {
+    blocks.push(buildCallout(`Completion Rate: ${todoReview.completion_rate}`, '📈'));
+  }
+  return blocks;
+}
+
+function buildHeadlinesSection(headlines) {
+  const blocks = [buildDivider(), buildHeading(2, 'CUSTOMER/EMPLOYEE HEADLINES')];
+  for (const h of headlines) {
+    const prefix = h.type ? `[${h.type}] ` : '';
+    const suffix = h.dropped_to_issues ? ' → Dropped to Issues List' : '';
+    blocks.push({
+      object: 'block', type: 'bulleted_list_item',
+      bulleted_list_item: { rich_text: [richText(`${prefix}${h.headline}${suffix}`)] }
+    });
+  }
+  return blocks;
+}
+
+function buildIDSSection(idsIssues) {
+  const blocks = [buildDivider(), buildHeading(1, 'IDS — IDENTIFY, DISCUSS, SOLVE')];
+  idsIssues.forEach((issue, i) => {
+    blocks.push(buildHeading(2, `Issue ${i + 1}: ${issue.title}`));
+    blocks.push(buildParagraph([{ text: 'Issue: ', bold: true }, { text: issue.issue }]));
+    if (issue.root_cause) {
+      blocks.push(buildParagraph([{ text: 'Root Cause: ', bold: true }, { text: issue.root_cause }]));
+    }
+    if (issue.discussion_summary) {
+      blocks.push(buildParagraph([{ text: 'Discussion Summary: ', bold: true }, { text: issue.discussion_summary }]));
+    }
+    blocks.push(buildParagraph([{ text: 'Solution: ', bold: true }, { text: issue.solution }]));
+  });
+  return blocks;
+}
+
+function buildConcludeSection(concludeTodos) {
+  const blocks = [buildDivider(), buildHeading(1, 'CONCLUDE — New To-Dos')];
+  const rows = concludeTodos.map(t => [t.todo, t.owner, t.due_date, t.department || '']);
+  blocks.push(buildTable(['To-Do', 'Owner', 'Due Date', 'Department'], rows));
+  return blocks;
+}
+
+function buildCascadingMessagesSection(messages) {
+  const blocks = [buildDivider(), buildHeading(1, 'CASCADING MESSAGES')];
+  const rows = messages.map(m => [m.message, m.who_communicates || '', m.to_whom || '']);
+  blocks.push(buildTable(['Message', 'Who Communicates', 'To Whom'], rows));
+  return blocks;
+}
+
+function buildNextMeetingSection(nextMeeting) {
+  const blocks = [buildDivider(), buildHeading(1, 'NEXT MEETING')];
+  const parts = [];
+  if (nextMeeting.date) parts.push(`Date: ${nextMeeting.date}`);
+  if (nextMeeting.time) parts.push(`Time: ${nextMeeting.time}`);
+  if (nextMeeting.location) parts.push(`Location: ${nextMeeting.location}`);
+  blocks.push(buildParagraph(parts.join(' | ')));
+  return blocks;
+}
+
+function buildMeetingRatingSection(meetingRating) {
+  const blocks = [buildDivider(), buildHeading(2, 'MEETING RATING')];
+  const rows = meetingRating.ratings.map(r => [r.attendee, r.rating === 0 || r.rating === 'To be submitted' ? 'To be submitted' : String(r.rating)]);
+  blocks.push(buildTable(['Attendee', 'Rating (1\u201310)'], rows));
+  blocks.push(buildParagraph([{ text: 'Target Average: 8+', bold: true }]));
+  if (meetingRating.average != null && meetingRating.average > 0) {
+    blocks.push(buildCallout(`Average Rating: ${meetingRating.average}/10`, '⭐'));
+  }
+  return blocks;
+}
+
+function buildEndFooter() {
+  return [
+    buildDivider(),
+    buildParagraph([{ text: 'End of Meeting Notes \u2014 Fuel Core Solutions', bold: true }])
+  ];
+}
+
+// ─── Simple format (backward compatible) ────────────────────────────
+
+function buildSimpleNoteBlocks(overview, actionItems, keyPoints) {
+  const blocks = [];
+  if (overview) {
+    blocks.push(buildHeading(2, 'Overview'));
+    blocks.push(buildParagraph(overview));
+  }
+  if (actionItems?.length > 0) {
+    blocks.push(buildHeading(2, 'Action Items'));
+    for (const item of actionItems) {
+      blocks.push({
+        object: 'block', type: 'to_do',
+        to_do: { rich_text: [richText(item)], checked: false }
+      });
+    }
+  }
+  if (keyPoints?.length > 0) {
+    blocks.push(buildHeading(2, 'Key Points'));
+    for (const point of keyPoints) {
+      blocks.push({
+        object: 'block', type: 'bulleted_list_item',
+        bulleted_list_item: { rich_text: [richText(point)] }
+      });
+    }
+  }
+  return blocks;
+}
+
+// ─── Create Meeting Note Route ──────────────────────────────────────
+
 router.post('/notes', async (req, res) => {
   try {
-    const { title, date, duration_seconds, overview, action_items, key_points, project_id } = req.body;
+    const {
+      title, date, duration_seconds, meeting_type, project_id,
+      meeting_info, segue, scorecard, rock_review, todo_review,
+      headlines, ids_issues, conclude_todos, cascading_messages,
+      next_meeting, meeting_rating,
+      overview, action_items, key_points
+    } = req.body;
 
     const children = [];
 
-    // Add overview
-    if (overview) {
-      children.push({
-        object: 'block',
-        type: 'heading_2',
-        heading_2: { rich_text: [{ type: 'text', text: { content: 'Overview' } }] }
-      });
-      children.push({
-        object: 'block',
-        type: 'paragraph',
-        paragraph: { rich_text: [{ type: 'text', text: { content: overview } }] }
-      });
+    // Detect structured vs simple format — use structured for ANY meeting type if structured fields are present
+    const hasStructuredSections = (
+      segue || scorecard || rock_review || todo_review ||
+      ids_issues || conclude_todos || meeting_rating || meeting_info
+    );
+
+    if (hasStructuredSections) {
+      // Company branding header
+      children.push(...buildCompanyHeader(meeting_type));
+      // Structured format — rich tables, toggles, dividers
+      if (meeting_info) children.push(...buildMeetingInfoSection(meeting_info, date, duration_seconds));
+      if (segue?.length) children.push(...buildSegueSection(segue));
+      if (scorecard?.length) children.push(...buildScorecardSection(scorecard));
+      if (rock_review?.length) children.push(...buildRockReviewSection(rock_review));
+      if (todo_review?.items?.length) children.push(...buildTodoReviewSection(todo_review));
+      if (headlines?.length) children.push(...buildHeadlinesSection(headlines));
+      if (ids_issues?.length) children.push(...buildIDSSection(ids_issues));
+      if (conclude_todos?.length) children.push(...buildConcludeSection(conclude_todos));
+      if (cascading_messages?.length) children.push(...buildCascadingMessagesSection(cascading_messages));
+      if (next_meeting) children.push(...buildNextMeetingSection(next_meeting));
+      if (meeting_rating?.ratings?.length) children.push(...buildMeetingRatingSection(meeting_rating));
+      // End footer
+      children.push(...buildEndFooter());
+    } else {
+      // Simple format (backward compatible)
+      children.push(...buildSimpleNoteBlocks(overview, action_items, key_points));
     }
 
-    // Add action items
-    if (action_items?.length > 0) {
-      children.push({
-        object: 'block',
-        type: 'heading_2',
-        heading_2: { rich_text: [{ type: 'text', text: { content: 'Action Items' } }] }
-      });
-      for (const item of action_items) {
-        children.push({
-          object: 'block',
-          type: 'to_do',
-          to_do: { rich_text: [{ type: 'text', text: { content: item } }], checked: false }
-        });
-      }
-    }
+    console.log(`Building meeting note with ${children.length} top-level blocks (structured: ${!!hasStructuredSections})`);
 
-    // Add key points
-    if (key_points?.length > 0) {
-      children.push({
-        object: 'block',
-        type: 'heading_2',
-        heading_2: { rich_text: [{ type: 'text', text: { content: 'Key Points' } }] }
-      });
-      for (const point of key_points) {
-        children.push({
-          object: 'block',
-          type: 'bulleted_list_item',
-          bulleted_list_item: { rich_text: [{ type: 'text', text: { content: point } }] }
-        });
-      }
-    }
+    // Meeting type emoji mapping
+    const noteEmoji = {
+      'L10': '🔟', 'Quarterly': '📊', 'Annual': '📅',
+      'Same Page': '🤝', 'State of Company': '🏢',
+      'Quarterly Conversation': '💬', 'General': '🎙️'
+    };
 
     const properties = {
       Name: { title: [{ text: { content: title || 'Meeting Notes' } }] },
@@ -130,7 +374,7 @@ router.post('/notes', async (req, res) => {
 
     const result = await notion.pages.create({
       parent: { database_id: DATABASES.notes },
-      icon: { type: 'emoji', emoji: '🎙️' },
+      icon: { type: 'emoji', emoji: noteEmoji[meeting_type] || '🎙️' },
       properties,
       children
     });

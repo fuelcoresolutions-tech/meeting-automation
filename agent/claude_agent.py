@@ -43,19 +43,178 @@ TOOLS = [
     },
     {
         "name": "create_meeting_note",
-        "description": "Create a meeting note in the Notion Notes database with overview, action items, and key points.",
+        "description": "Create a structured meeting note in Notion. ALWAYS populate the structured section fields (meeting_info, segue, ids_issues, conclude_todos, cascading_messages, meeting_rating, etc.) for ALL meeting types. Use overview/action_items/key_points ONLY as fallback if no structured data can be extracted.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "Title of the meeting note"},
+                "title": {"type": "string", "description": "Title following strict format (e.g., 'L10 Meeting Notes — Feb 08, 2026')"},
                 "date": {"type": "string", "description": "Date of the meeting (YYYY-MM-DD)"},
                 "duration_seconds": {"type": "integer", "description": "Duration in seconds"},
-                "overview": {"type": "string", "description": "Meeting overview/summary"},
-                "action_items": {"type": "array", "items": {"type": "string"}, "description": "List of action items"},
-                "key_points": {"type": "array", "items": {"type": "string"}, "description": "Key discussion points"},
-                "project_id": {"type": "string", "description": "Optional project ID to link to"}
+                "meeting_type": {
+                    "type": "string",
+                    "enum": ["L10", "Quarterly", "Annual", "Same Page", "State of Company", "Quarterly Conversation", "Other", "General"],
+                    "description": "Detected meeting type from transcript"
+                },
+                "project_id": {"type": "string", "description": "Project ID to link to"},
+                "meeting_info": {
+                    "type": "object",
+                    "description": "Meeting metadata (date, time, location, facilitator, scribe, attendees)",
+                    "properties": {
+                        "time": {"type": "string", "description": "Meeting time range (e.g., '9:00 AM - 10:30 AM')"},
+                        "location": {"type": "string"},
+                        "facilitator": {"type": "string"},
+                        "scribe": {"type": "string"},
+                        "attendees": {"type": "array", "items": {"type": "string"}}
+                    }
+                },
+                "segue": {
+                    "type": "array",
+                    "description": "Segue — personal/professional good news per person",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "person": {"type": "string"},
+                            "personal": {"type": "string"},
+                            "professional": {"type": "string"}
+                        },
+                        "required": ["person"]
+                    }
+                },
+                "scorecard": {
+                    "type": "array",
+                    "description": "Scorecard metrics review",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "metric": {"type": "string"},
+                            "owner": {"type": "string"},
+                            "goal": {"type": "string"},
+                            "actual": {"type": "string"},
+                            "status": {"type": "string", "enum": ["On Track", "Off Track"]}
+                        },
+                        "required": ["metric", "owner", "status"]
+                    }
+                },
+                "rock_review": {
+                    "type": "array",
+                    "description": "Quarterly rocks/priorities status",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "rock": {"type": "string"},
+                            "owner": {"type": "string"},
+                            "due": {"type": "string"},
+                            "status": {"type": "string", "enum": ["On Track", "Off Track"]}
+                        },
+                        "required": ["rock", "owner", "status"]
+                    }
+                },
+                "todo_review": {
+                    "type": "object",
+                    "description": "To-Do list review from previous meeting with completion rate",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "todo": {"type": "string"},
+                                    "owner": {"type": "string"},
+                                    "status": {"type": "string", "enum": ["Done", "Not Done"]}
+                                },
+                                "required": ["todo", "owner", "status"]
+                            }
+                        },
+                        "completion_rate": {"type": "string", "description": "e.g., '85% (6/7 completed)'"}
+                    }
+                },
+                "headlines": {
+                    "type": "array",
+                    "description": "Customer/Employee headlines",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["Customer", "Employee"]},
+                            "headline": {"type": "string"},
+                            "dropped_to_issues": {"type": "boolean"}
+                        },
+                        "required": ["headline"]
+                    }
+                },
+                "ids_issues": {
+                    "type": "array",
+                    "description": "IDS issues — each with issue statement, root cause, discussion summary, and solution",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Short issue title"},
+                            "issue": {"type": "string", "description": "Clear problem statement"},
+                            "root_cause": {"type": "string"},
+                            "discussion_summary": {"type": "string"},
+                            "solution": {"type": "string"}
+                        },
+                        "required": ["title", "issue", "solution"]
+                    }
+                },
+                "conclude_todos": {
+                    "type": "array",
+                    "description": "New To-Dos from the Conclude section",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "todo": {"type": "string"},
+                            "owner": {"type": "string"},
+                            "due_date": {"type": "string"},
+                            "department": {"type": "string"}
+                        },
+                        "required": ["todo", "owner", "due_date"]
+                    }
+                },
+                "cascading_messages": {
+                    "type": "array",
+                    "description": "Messages to cascade to the organization",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string"},
+                            "who_communicates": {"type": "string"},
+                            "to_whom": {"type": "string"}
+                        },
+                        "required": ["message"]
+                    }
+                },
+                "next_meeting": {
+                    "type": "object",
+                    "description": "Next meeting details",
+                    "properties": {
+                        "date": {"type": "string"},
+                        "time": {"type": "string"},
+                        "location": {"type": "string"}
+                    }
+                },
+                "meeting_rating": {
+                    "type": "object",
+                    "description": "Meeting ratings from attendees with average",
+                    "properties": {
+                        "ratings": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "attendee": {"type": "string"},
+                                    "rating": {"type": "number"}
+                                },
+                                "required": ["attendee", "rating"]
+                            }
+                        },
+                        "average": {"type": "number"}
+                    }
+                },
+                "overview": {"type": "string", "description": "Meeting overview (for General/non-EOS meetings)"},
+                "action_items": {"type": "array", "items": {"type": "string"}, "description": "Action items list (for General/non-EOS meetings)"},
+                "key_points": {"type": "array", "items": {"type": "string"}, "description": "Key discussion points (for General/non-EOS meetings)"}
             },
-            "required": ["title", "date", "overview"]
+            "required": ["title", "date", "meeting_type"]
         }
     },
     {
@@ -166,15 +325,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
             elif tool_name == "create_meeting_note":
                 response = await client.post(
                     f"{NOTION_API_BASE}/api/notes",
-                    json={
-                        "title": tool_input.get("title"),
-                        "date": tool_input.get("date"),
-                        "duration_seconds": tool_input.get("duration_seconds"),
-                        "overview": tool_input.get("overview"),
-                        "action_items": tool_input.get("action_items", []),
-                        "key_points": tool_input.get("key_points", []),
-                        "project_id": tool_input.get("project_id")
-                    },
+                    json=tool_input,
                     timeout=30.0
                 )
                 result = response.json()
@@ -364,9 +515,10 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
         # Standard processing: send transcript directly
         transcript_text = full_transcript_text if full_transcript_text else 'No transcript available'
 
-    # Duration
+    # Duration — Fireflies sends minutes as a float (e.g., 49.58 for ~50 min)
     duration_raw = transcript_data.get('duration', 0) or 0
-    duration_mins = round(duration_raw) if duration_raw >= 1 else f"{int(duration_raw * 60)} seconds"
+    duration_mins = round(duration_raw)
+    duration_seconds = round(duration_raw * 60)
 
     # Detect complexity for model selection
     complexity = detect_meeting_complexity(transcript_data)
@@ -378,20 +530,23 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
         logger.info(f"Meeting complexity: standard — using Sonnet ({SONNET_MODEL})")
 
     # Build prompt
-    prompt = f"""Process this meeting transcript and create Notion entries:
+    prompt = f"""Process this meeting transcript and create DEEPLY DETAILED Notion entries.
 
 ## Meeting Information
 - **Title**: {transcript_data.get('title', 'Untitled Meeting')}
 - **Date**: {formatted_date}
-- **Duration**: {duration_mins} minutes
+- **Duration**: {duration_mins} minutes ({duration_seconds} seconds)
+- **Organizer**: {transcript_data.get('organizer_email', 'Unknown')}
+- **Participants**: {', '.join(transcript_data.get('participants', []))}
+- **Transcript URL**: {transcript_data.get('transcript_url', 'N/A')}
 
-## Meeting Overview
+## Meeting Overview (from Fireflies)
 {overview}
 
 ## Action Items (from Fireflies)
 {action_items_text}
 
-## Key Discussion Points
+## Key Discussion Points (from Fireflies)
 {key_points_text}
 
 ## Full Transcript
@@ -399,14 +554,37 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
 
 ---
 
-**Instructions:**
-1. First, call get_projects() to see existing projects
-2. Create a meeting note with the overview and link it to the most relevant project
-3. Analyze action items AND transcript to extract all tasks
-4. Group related tasks under parent tasks where appropriate
-5. Set priorities and deadlines based on context
-6. If this is a recurring meeting (L10, Quarterly, etc.) OR there are unresolved issues/incomplete to-dos/planned follow-ups, create a meeting agenda for the NEXT occurrence pre-populated with carry-over items. Skip the agenda if it was a one-off meeting with no follow-up needed.
-7. Provide a summary of what was created (notes, agenda if applicable, tasks)
+## INSTRUCTIONS — READ CAREFULLY
+
+1. First, call get_projects() to find existing projects to link to.
+
+2. Create a DEEPLY DETAILED meeting note using the structured EOS fields. This is the most important step.
+   You MUST populate ALL of these structured sections — do NOT skip any:
+   
+   - **meeting_info**: REQUIRED. Time, location, facilitator, scribe, attendees list with real names.
+   - **segue**: REQUIRED. For EACH attendee, extract any good news or positive updates they shared — even informal ones. If someone shares any positive development at any point in the meeting, that's their segue entry. Use a "Good News" field combining personal and professional.
+   - **rock_review**: REQUIRED. Extract ALL strategic priorities, quarterly goals, or major initiatives discussed. Even if not called "rocks", any strategic goal or priority being tracked is a rock. Each needs: specific description, owner, due date, On Track/Off Track status.
+   - **scorecard**: REQUIRED if ANY numbers, metrics, targets, or KPIs are discussed. Revenue targets, sales numbers, headcount, timelines — all go here.
+   - **ids_issues**: CRITICAL — This is the MOST IMPORTANT section. Extract EVERY distinct topic discussed for more than 30 seconds. Aim for 5+ issues minimum. Each issue needs:
+     * title: Short descriptive title
+     * issue: Clear one-sentence problem statement
+     * root_cause: WHY this is happening
+     * discussion_summary: 3-5 DETAILED sentences capturing the actual conversation — who said what, what was proposed, what alternatives were considered, what trade-offs were discussed, what was decided and WHY
+     * solution: MUST use EOS language: "Change it – [specific change]" or "End it – [what ends]" or "Live with it – [what's accepted]"
+   - **conclude_todos**: REQUIRED. Extract EVERY action item mentioned ANYWHERE in the meeting — even casual ones like "I'll handle that" or "let's do that by Tuesday". Aim for 8+ to-dos. Each needs: specific action, owner (real name), due_date (specific date), department.
+   - **cascading_messages**: REQUIRED. What needs to be communicated outside this meeting — to whom, by whom.
+   - **next_meeting**: REQUIRED if any follow-up is mentioned. Date, time, location, key agenda items.
+   - **meeting_rating**: REQUIRED. List EACH attendee individually with their rating. If not explicitly given, use "To be submitted" as the rating value (not 0).
+
+3. Extract ALL tasks from the transcript — be aggressive. Create individual tasks with full descriptions and Dan Martell Definition of Done for each.
+
+4. Group related tasks under parent tasks when 3+ tasks relate to the same initiative.
+
+5. If this is a recurring meeting OR there are unresolved issues/incomplete to-dos/planned follow-ups, create a meeting agenda for the NEXT occurrence pre-populated with carry-over items.
+
+6. Provide a summary of everything created.
+
+**QUALITY CHECK before submitting:** Does your meeting note match the depth of a professional executive scribe? Are IDS discussion summaries 3-5 sentences each? Are ALL to-dos specific with real names and dates? If not, add more detail.
 """
 
     results = {
@@ -443,7 +621,7 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
 
             response = client.messages.create(
                 model=selected_model,
-                max_tokens=4096,
+                max_tokens=8192,
                 system=CACHED_SYSTEM,
                 tools=TOOLS,
                 messages=messages
