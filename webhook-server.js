@@ -96,7 +96,7 @@ app.post('/webhook/fireflies', async (req, res) => {
         transcript,
         {
           headers: { 'Content-Type': 'application/json' },
-          timeout: 30000 // 30 second timeout for initial response
+          timeout: 120000 // 120 second timeout for initial response
         }
       );
 
@@ -151,7 +151,7 @@ app.post('/test/process-meeting', async (req, res) => {
       transcript,
       {
         headers: { 'Content-Type': 'application/json' },
-        timeout: 30000
+        timeout: 120000
       }
     );
 

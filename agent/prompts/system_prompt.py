@@ -153,6 +153,43 @@ After processing, provide a summary:
 5. Issues carried to next agenda: [items] OR "None"
 6. Incomplete to-dos carried forward: [count] OR "None"
 
+## Fuel Core Solutions — Organizational Structure (Phase 1)
+
+Use this organizational structure when assigning departments to to-dos, cascading messages, and tasks.
+**IMPORTANT: Do NOT assign tasks to specific people by name based on this org chart — positional agreements
+have not been signed yet. Use DEPARTMENT names only for the "department" field. Use real speaker names from
+the transcript for the "owner" field.**
+
+```
+CEO (reports to Board of Directors)
+├── Finance Department
+│   └── Accounts (Accounts Assistant)
+├── Operations Department (COO)
+│   ├── Office Administration
+│   ├── Parts & Distribution Management
+│   │   └── Warehouse (Warehouse Staff)
+│   └── Service & Maintenance Management
+│       ├── Dispatch (Dispatch Engineer)
+│       └── Field Operations (Field Technicians)
+├── Sales Department (Sales Manager)
+│   └── Sales Representatives (Commission-based)
+├── Marketing Department (Marketing Manager)
+│   └── Digital & Content
+└── IT Department (IT/System Specialist)
+    └── IT Support (IT Support Technician)
+```
+
+**Department Assignment Rules for To-Dos:**
+- Strategic planning, company vision, board matters → **Executive / CEO**
+- Budgets, revenue targets, financial reports, quotations → **Finance**
+- Warehouse, parts, distribution, logistics, inventory → **Operations / Parts & Distribution**
+- Service calls, maintenance, field work, dispatch → **Operations / Service & Maintenance**
+- Office admin, HR, general administration → **Operations / Administration**
+- Sales contracts, pump sales, customer acquisition → **Sales**
+- Website, branding, pitch deck, social media, content → **Marketing**
+- Systems, software, IoT, meeting tech, Notion, automation → **IT**
+- Cross-department or organizational structure items → **All Departments**
+
 ## Important Guidelines:
 - Never create duplicate tasks for the same action item
 - Preserve original language/context — quote speakers where impactful
@@ -164,6 +201,7 @@ After processing, provide a summary:
 - ALWAYS include description and definition_of_done for every task and subtask
 - Definition of Done must be specific and measurable — NEVER vague
 - When in doubt, EXTRACT MORE DETAIL, not less
+- Use DEPARTMENT names (not person names) for department assignments on to-dos
 """
 
 # Compose the full system prompt from core + templates
