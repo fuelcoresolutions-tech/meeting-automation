@@ -324,9 +324,10 @@ router.post('/notes', async (req, res) => {
       ids_issues || conclude_todos || meeting_rating || meeting_info
     );
 
+    // ALWAYS use structured format — company header first
+    children.push(...buildCompanyHeader(meeting_type));
+
     if (hasStructuredSections) {
-      // Company branding header
-      children.push(...buildCompanyHeader(meeting_type));
       // Structured format — rich tables, toggles, dividers
       if (meeting_info) children.push(...buildMeetingInfoSection(meeting_info, date, duration_seconds));
       if (segue?.length) children.push(...buildSegueSection(segue));
@@ -339,12 +340,29 @@ router.post('/notes', async (req, res) => {
       if (cascading_messages?.length) children.push(...buildCascadingMessagesSection(cascading_messages));
       if (next_meeting) children.push(...buildNextMeetingSection(next_meeting));
       if (meeting_rating?.ratings?.length) children.push(...buildMeetingRatingSection(meeting_rating));
-      // End footer
-      children.push(...buildEndFooter());
     } else {
-      // Simple format (backward compatible)
-      children.push(...buildSimpleNoteBlocks(overview, action_items, key_points));
+      // Fallback: still use structured layout even for simple data
+      if (overview) {
+        children.push(buildDivider());
+        children.push(buildHeading(2, 'OVERVIEW'));
+        children.push(buildParagraph(overview));
+      }
+      if (action_items?.length > 0) {
+        children.push(buildDivider());
+        children.push(buildHeading(2, 'ACTION ITEMS'));
+        const rows = action_items.map((item, i) => [String(i + 1), item, '']);
+        children.push(buildTable(['#', 'Action Item', 'Owner'], rows));
+      }
+      if (key_points?.length > 0) {
+        children.push(buildDivider());
+        children.push(buildHeading(2, 'KEY DISCUSSION POINTS'));
+        const rows = key_points.map((point, i) => [String(i + 1), point]);
+        children.push(buildTable(['#', 'Key Point'], rows));
+      }
     }
+
+    // ALWAYS add end footer
+    children.push(...buildEndFooter());
 
     console.log(`Building meeting note with ${children.length} top-level blocks (structured: ${!!hasStructuredSections})`);
 
@@ -387,7 +405,87 @@ router.post('/notes', async (req, res) => {
   }
 });
 
-// Create a meeting agenda (EOS/Traction format)
+// ─── Meeting Agenda Section Builders ─────────────────────────────
+
+function buildAgendaCompanyHeader(meetingType) {
+  const typeLabels = {
+    'L10': 'Level 10 Meeting Agenda',
+    'Quarterly': 'Quarterly Meeting Agenda',
+    'Annual': 'Annual Planning Agenda',
+    'Same Page': 'Same Page Meeting Agenda',
+    'State of Company': 'State of the Company Agenda',
+    'Quarterly Conversation': 'Quarterly Conversation Agenda',
+    'Other': 'Meeting Agenda',
+    'General': 'Meeting Agenda'
+  };
+  return [
+    buildHeading(1, 'FUEL CORE SOLUTIONS'),
+    buildParagraph([
+      { text: typeLabels[meetingType] || 'Meeting Agenda', bold: false }
+    ]),
+    buildParagraph([
+      { text: 'EOS / Traction Framework', bold: false }
+    ]),
+    buildDivider()
+  ];
+}
+
+function buildAgendaInfoSection(meetingDate, durationMinutes, location, facilitator, attendees) {
+  const blocks = [buildHeading(2, 'MEETING INFORMATION')];
+  const rows = [];
+  if (meetingDate) rows.push(['Date', meetingDate]);
+  if (durationMinutes) rows.push(['Duration', `${durationMinutes} minutes`]);
+  if (location) rows.push(['Location', location]);
+  if (facilitator) rows.push(['Facilitator', facilitator]);
+  if (attendees?.length) rows.push(['Attendees', attendees.join(', ')]);
+  if (rows.length) blocks.push(buildTable(['Field', 'Details'], rows));
+  return blocks;
+}
+
+function buildAgendaL10Segments() {
+  const blocks = [buildDivider(), buildHeading(2, 'L10 MEETING SEGMENTS')];
+  const segments = [
+    ['Segue', '5 min', 'Share personal and professional good news'],
+    ['Scorecard Review', '5 min', 'Review weekly metrics — on/off track'],
+    ['Rock Review', '5 min', 'Review quarterly priorities — on/off track'],
+    ['Customer/Employee Headlines', '5 min', 'Notable news and updates'],
+    ['To-Do Review', '5 min', "Review last week's to-dos — done/not done"],
+    ['IDS (Identify, Discuss, Solve)', '60 min', 'Work through issues list'],
+    ['Conclude', '5 min', 'Recap to-dos, cascading messages, rate 1-10']
+  ];
+  blocks.push(buildTable(['Segment', 'Time', 'Description'], segments));
+  return blocks;
+}
+
+function buildAgendaRocksSection(rocks) {
+  const blocks = [buildDivider(), buildHeading(2, 'ROCKS TO REVIEW — 90-Day Priorities')];
+  const rows = rocks.map((r, i) => [String(i + 1), r, 'On Track / Off Track']);
+  blocks.push(buildTable(['#', 'Rock', 'Status'], rows));
+  return blocks;
+}
+
+function buildAgendaIssuesSection(issues) {
+  const blocks = [buildDivider(), buildHeading(2, 'ISSUES FOR IDS')];
+  const rows = issues.map((issue, i) => [String(i + 1), issue, 'To be discussed']);
+  blocks.push(buildTable(['#', 'Issue', 'Status'], rows));
+  return blocks;
+}
+
+function buildAgendaItemsSection(items) {
+  const blocks = [buildDivider(), buildHeading(2, 'AGENDA ITEMS')];
+  const rows = items.map((item, i) => [String(i + 1), item, '']);
+  blocks.push(buildTable(['#', 'Item', 'Notes'], rows));
+  return blocks;
+}
+
+function buildAgendaEndFooter() {
+  return [
+    buildDivider(),
+    buildParagraph([{ text: 'End of Meeting Agenda — Fuel Core Solutions', bold: true }])
+  ];
+}
+
+// Create a meeting agenda (EOS/Traction format — structured)
 router.post('/agendas', async (req, res) => {
   try {
     const {
@@ -406,144 +504,36 @@ router.post('/agendas', async (req, res) => {
 
     const children = [];
 
-    // Meeting Details Section
-    children.push({
-      object: 'block',
-      type: 'heading_2',
-      heading_2: { rich_text: [{ type: 'text', text: { content: 'Meeting Details' } }] }
-    });
+    // Company branding header
+    children.push(...buildAgendaCompanyHeader(meeting_type));
 
-    const detailsText = [
-      `📅 Date: ${meeting_date}`,
-      `⏱️ Duration: ${duration_minutes || 90} minutes`,
-      location ? `📍 Location: ${location}` : null,
-      facilitator ? `👤 Facilitator: ${facilitator}` : null
-    ].filter(Boolean).join('\n');
+    // Meeting information table
+    children.push(...buildAgendaInfoSection(meeting_date, duration_minutes, location, facilitator, attendees));
 
-    children.push({
-      object: 'block',
-      type: 'paragraph',
-      paragraph: { rich_text: [{ type: 'text', text: { content: detailsText } }] }
-    });
-
-    // Attendees Section
-    if (attendees?.length > 0) {
-      children.push({
-        object: 'block',
-        type: 'heading_3',
-        heading_3: { rich_text: [{ type: 'text', text: { content: 'Attendees' } }] }
-      });
-      for (const attendee of attendees) {
-        children.push({
-          object: 'block',
-          type: 'bulleted_list_item',
-          bulleted_list_item: { rich_text: [{ type: 'text', text: { content: attendee } }] }
-        });
-      }
-    }
-
-    // Add L10 Meeting Structure if applicable
+    // L10 segments table (if L10 meeting)
     if (meeting_type === 'L10') {
-      children.push({
-        object: 'block',
-        type: 'divider',
-        divider: {}
-      });
-      children.push({
-        object: 'block',
-        type: 'heading_2',
-        heading_2: { rich_text: [{ type: 'text', text: { content: 'L10 Meeting Agenda' } }] }
-      });
-
-      // Standard L10 segments
-      const l10Segments = [
-        { time: '5 min', name: 'Segue', desc: 'Share personal and professional good news' },
-        { time: '5 min', name: 'Scorecard Review', desc: 'Review weekly metrics - on/off track' },
-        { time: '5 min', name: 'Rock Review', desc: 'Review quarterly priorities - on/off track' },
-        { time: '5 min', name: 'Customer/Employee Headlines', desc: 'Notable news and updates' },
-        { time: '5 min', name: 'To-Do Review', desc: 'Review last week\'s to-dos - done/not done' },
-        { time: '60 min', name: 'IDS (Identify, Discuss, Solve)', desc: 'Work through issues list' },
-        { time: '5 min', name: 'Conclude', desc: 'Recap to-dos, cascading messages, rate 1-10' }
-      ];
-
-      for (const segment of l10Segments) {
-        children.push({
-          object: 'block',
-          type: 'toggle',
-          toggle: {
-            rich_text: [{ type: 'text', text: { content: `${segment.time} - ${segment.name}` } }],
-            children: [{
-              object: 'block',
-              type: 'paragraph',
-              paragraph: { rich_text: [{ type: 'text', text: { content: segment.desc } }] }
-            }]
-          }
-        });
-      }
+      children.push(...buildAgendaL10Segments());
     }
 
-    // Rocks to Review Section
+    // Rocks to review
     if (rocks_to_review?.length > 0) {
-      children.push({
-        object: 'block',
-        type: 'divider',
-        divider: {}
-      });
-      children.push({
-        object: 'block',
-        type: 'heading_2',
-        heading_2: { rich_text: [{ type: 'text', text: { content: '🪨 Rocks to Review' } }] }
-      });
-      for (const rock of rocks_to_review) {
-        children.push({
-          object: 'block',
-          type: 'to_do',
-          to_do: { rich_text: [{ type: 'text', text: { content: rock } }], checked: false }
-        });
-      }
+      children.push(...buildAgendaRocksSection(rocks_to_review));
     }
 
-    // Known Issues for IDS Section
+    // Known issues for IDS
     if (known_issues?.length > 0) {
-      children.push({
-        object: 'block',
-        type: 'divider',
-        divider: {}
-      });
-      children.push({
-        object: 'block',
-        type: 'heading_2',
-        heading_2: { rich_text: [{ type: 'text', text: { content: '⚠️ Issues for IDS' } }] }
-      });
-      for (const issue of known_issues) {
-        children.push({
-          object: 'block',
-          type: 'numbered_list_item',
-          numbered_list_item: { rich_text: [{ type: 'text', text: { content: issue } }] }
-        });
-      }
+      children.push(...buildAgendaIssuesSection(known_issues));
     }
 
-    // Custom Agenda Items Section
+    // Custom agenda items
     if (agenda_items?.length > 0) {
-      children.push({
-        object: 'block',
-        type: 'divider',
-        divider: {}
-      });
-      children.push({
-        object: 'block',
-        type: 'heading_2',
-        heading_2: { rich_text: [{ type: 'text', text: { content: 'Agenda Items' } }] }
-      });
-      for (const item of agenda_items) {
-        children.push({
-          object: 'block',
-          type: 'to_do',
-          to_do: { rich_text: [{ type: 'text', text: { content: item } }], checked: false }
-        });
-      }
+      children.push(...buildAgendaItemsSection(agenda_items));
     }
+
+    // End footer
+    children.push(...buildAgendaEndFooter());
+
+    console.log(`Building meeting agenda with ${children.length} top-level blocks`);
 
     // Meeting type emoji mapping
     const typeEmoji = {
@@ -552,6 +542,7 @@ router.post('/agendas', async (req, res) => {
       'Annual': '📅',
       'Same Page': '🤝',
       'State of Company': '🏢',
+      'Quarterly Conversation': '💬',
       'Other': '📋'
     };
 
