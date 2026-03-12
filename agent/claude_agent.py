@@ -3,8 +3,9 @@ import httpx
 import logging
 from datetime import datetime
 from anthropic import Anthropic
-from prompts.system_prompt import SYSTEM_PROMPT
+from prompts.system_prompt import build_system_prompt
 from long_meeting_processor import process_long_meeting, estimate_tokens
+from context_loader import load_context_for_prompt
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,15 +21,6 @@ HAIKU_MODEL = os.getenv("CLAUDE_HAIKU_MODEL", "claude-haiku-4-5-20251001")
 
 # Long meeting threshold (tokens)
 LONG_MEETING_THRESHOLD = int(os.getenv("LONG_MEETING_THRESHOLD_TOKENS", "10000"))
-
-# Cached system prompt for Anthropic prompt caching
-CACHED_SYSTEM = [
-    {
-        "type": "text",
-        "text": SYSTEM_PROMPT,
-        "cache_control": {"type": "ephemeral"}
-    }
-]
 
 # Define tools for Claude API (function calling)
 TOOLS = [
@@ -252,16 +244,58 @@ TOOLS = [
         }
     },
     {
-        "name": "create_project",
-        "description": "Create a new project in Notion. Only use when multiple related tasks don't fit any existing project.",
+        "name": "create_meeting_register",
+        "description": "Create a Meeting Register entry in Notion to track meeting processing. Do this after creating the meeting note.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Project name"},
-                "description": {"type": "string", "description": "Project description"},
-                "status": {"type": "string", "enum": ["Planned", "In Progress", "Completed"]}
+                "title": {"type": "string", "description": "Meeting title"},
+                "meetingDate": {"type": "string", "description": "Meeting date (YYYY-MM-DD)"},
+                "meetingFormat": {"type": "string", "enum": ["Virtual", "In-Person", "Hybrid"]},
+                "meetingTypes": {"type": "array", "items": {"type": "string", "enum": ["L10", "Quartely", "Annual", "Same Page", "State Of Company", "Ad Hoc"]}},
+                "processingStatus": {"type": "string", "enum": ["Pending", "Processing", "Completed", "Failed"]},
+                "transcriptSource": {"type": "string", "description": "Fireflies transcript URL"},
+                "confidenceNotes": {"type": "string", "description": "Any low-confidence decisions"},
+                "facilitatorIds": {"type": "array", "items": {"type": "string"}, "description": "People IDs for facilitator"},
+                "attendeeIds": {"type": "array", "items": {"type": "string"}, "description": "People IDs for attendees"},
+                "departmentIds": {"type": "array", "items": {"type": "string"}, "description": "Department IDs"},
+                "meetingNoteIds": {"type": "array", "items": {"type": "string"}, "description": "Meeting Note page IDs"}
             },
-            "required": ["name"]
+            "required": ["title", "meetingDate"]
+        }
+    },
+    {
+        "name": "create_eos_issue",
+        "description": "Create an EOS Issue in Notion. Use for unresolved issues from IDS discussion.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short issue title"},
+                "issueDescription": {"type": "string", "description": "Full issue description"},
+                "priority": {"type": "string", "enum": ["Low", "Medium", "High"]},
+                "isResolved": {"type": "boolean"},
+                "resolutionNotes": {"type": "string"},
+                "raisedByIds": {"type": "array", "items": {"type": "string"}, "description": "People IDs who raised the issue"},
+                "departmentIds": {"type": "array", "items": {"type": "string"}, "description": "Department IDs"},
+                "projectIds": {"type": "array", "items": {"type": "string"}, "description": "Project IDs"},
+                "sourceMeetingIds": {"type": "array", "items": {"type": "string"}, "description": "Meeting Note IDs"}
+            },
+            "required": ["title"]
+        }
+    },
+    {
+        "name": "create_speaker_alias",
+        "description": "Create a Speaker Alias mapping in Notion. Use when a new speaker-to-person mapping is discovered.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "alias": {"type": "string", "description": "How Fireflies labels the speaker"},
+                "personIds": {"type": "array", "items": {"type": "string"}, "description": "People IDs for the resolved person"},
+                "source": {"type": "string", "description": "Source of the alias (e.g., 'Fireflies')"},
+                "confidence": {"type": "number", "description": "Confidence 0-1"},
+                "notes": {"type": "string", "description": "Why this mapping was made"}
+            },
+            "required": ["alias"]
         }
     },
     {
@@ -366,18 +400,32 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                 result = response.json()
                 return f"Created subtask '{tool_input.get('name')}' (ID: {result.get('id')})"
 
-            elif tool_name == "create_project":
+            elif tool_name == "create_meeting_register":
                 response = await client.post(
-                    f"{NOTION_API_BASE}/api/projects",
-                    json={
-                        "name": tool_input.get("name"),
-                        "description": tool_input.get("description"),
-                        "status": tool_input.get("status", "Planned")
-                    },
+                    f"{NOTION_API_BASE}/api/meeting-register",
+                    json=tool_input,
                     timeout=30.0
                 )
                 result = response.json()
-                return f"Created project '{tool_input.get('name')}' with ID: {result.get('id')}"
+                return f"Created meeting register entry '{tool_input.get('title')}' (ID: {result.get('id')})"
+
+            elif tool_name == "create_eos_issue":
+                response = await client.post(
+                    f"{NOTION_API_BASE}/api/eos-issues",
+                    json=tool_input,
+                    timeout=30.0
+                )
+                result = response.json()
+                return f"Created EOS issue '{tool_input.get('title')}' (ID: {result.get('id')})"
+
+            elif tool_name == "create_speaker_alias":
+                response = await client.post(
+                    f"{NOTION_API_BASE}/api/speaker-aliases",
+                    json=tool_input,
+                    timeout=30.0
+                )
+                result = response.json()
+                return f"Created speaker alias '{tool_input.get('alias')}' (ID: {result.get('id')})"
 
             elif tool_name == "create_meeting_agenda":
                 response = await client.post(
@@ -529,7 +577,46 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
         selected_model = SONNET_MODEL
         logger.info(f"Meeting complexity: standard — using Sonnet ({SONNET_MODEL})")
 
-    # Build prompt
+    # ── Load fresh Notion context ──
+    logger.info("Loading fresh Notion context for prompt injection...")
+    try:
+        raw_context, context_section = await load_context_for_prompt()
+        # Find default project ID from context
+        projects_list = raw_context.get("projects", [])
+        default_project_id = projects_list[0]["id"] if projects_list else None
+        project_list_text = "\n".join(
+            f"- {p['name']} (ID: {p['id']}, Status: {p.get('status', '?')})"
+            for p in projects_list
+        ) if projects_list else "No projects found."
+        logger.info(f"Context loaded. {len(projects_list)} projects, default: {default_project_id}")
+    except Exception as e:
+        logger.warning(f"Failed to load Notion context: {e} — falling back to static prompt")
+        context_section = ""
+        default_project_id = None
+        project_list_text = "Context unavailable — call get_projects() manually."
+
+    # Build dynamic system prompt with injected context
+    dynamic_system_prompt = build_system_prompt(context_section)
+    CACHED_SYSTEM = [
+        {
+            "type": "text",
+            "text": dynamic_system_prompt,
+            "cache_control": {"type": "ephemeral"}
+        }
+    ]
+
+    # Build user prompt
+    project_instruction = ""
+    if default_project_id:
+        project_instruction = f"""
+**AVAILABLE PROJECTS (from KNOWN DATA):**
+{project_list_text}
+
+Use project_id from the list above when creating notes and tasks. Default project: {default_project_id}
+Do NOT call get_projects() — the project list is already provided above."""
+    else:
+        project_instruction = "First, call get_projects() to find existing projects to link to."
+
     prompt = f"""Process this meeting transcript and create DEEPLY DETAILED Notion entries.
 
 ## Meeting Information
@@ -556,35 +643,36 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
 
 ## INSTRUCTIONS — READ CAREFULLY
 
-1. First, call get_projects() to find existing projects to link to.
+{project_instruction}
 
-2. Create a DEEPLY DETAILED meeting note using the structured EOS fields. This is the most important step.
+1. Create a DEEPLY DETAILED meeting note using the structured EOS fields. This is the most important step.
    You MUST populate ALL of these structured sections — do NOT skip any:
    
-   - **meeting_info**: REQUIRED. Time, location, facilitator, scribe, attendees list with real names.
-   - **segue**: REQUIRED. For EACH attendee, extract any good news or positive updates they shared — even informal ones. If someone shares any positive development at any point in the meeting, that's their segue entry. Use a "Good News" field combining personal and professional.
-   - **rock_review**: REQUIRED. Extract ALL strategic priorities, quarterly goals, or major initiatives discussed. Even if not called "rocks", any strategic goal or priority being tracked is a rock. Each needs: specific description, owner, due date, On Track/Off Track status.
-   - **scorecard**: REQUIRED if ANY numbers, metrics, targets, or KPIs are discussed. Revenue targets, sales numbers, headcount, timelines — all go here.
-   - **ids_issues**: CRITICAL — This is the MOST IMPORTANT section. Extract EVERY distinct topic discussed for more than 30 seconds. Aim for 5+ issues minimum. Each issue needs:
-     * title: Short descriptive title
-     * issue: Clear one-sentence problem statement
-     * root_cause: WHY this is happening
-     * discussion_summary: 3-5 DETAILED sentences capturing the actual conversation — who said what, what was proposed, what alternatives were considered, what trade-offs were discussed, what was decided and WHY
-     * solution: MUST use EOS language: "Change it – [specific change]" or "End it – [what ends]" or "Live with it – [what's accepted]"
-   - **conclude_todos**: REQUIRED. Extract EVERY action item mentioned ANYWHERE in the meeting — even casual ones like "I'll handle that" or "let's do that by Tuesday". Aim for 8+ to-dos. Each needs: specific action, owner (real name), due_date (specific date), department.
-   - **cascading_messages**: REQUIRED. What needs to be communicated outside this meeting — to whom, by whom.
-   - **next_meeting**: REQUIRED if any follow-up is mentioned. Date, time, location, key agenda items.
-   - **meeting_rating**: REQUIRED. List EACH attendee individually with their rating. If not explicitly given, use "To be submitted" as the rating value (not 0).
+   - **meeting_info**: REQUIRED. Time, location, facilitator, scribe, attendees list with real names from KNOWN PEOPLE.
+   - **segue**: REQUIRED. For EACH attendee, extract any good news or positive updates they shared.
+   - **rock_review**: REQUIRED. Extract ALL strategic priorities. Reference KNOWN ROCKS by exact title when matching.
+   - **scorecard**: REQUIRED if ANY numbers, metrics, targets, or KPIs are discussed.
+   - **ids_issues**: CRITICAL — MOST IMPORTANT section. Extract EVERY distinct topic discussed 30+ seconds. Each needs: title, issue, root_cause, discussion_summary (3-5 sentences), solution (EOS language).
+   - **conclude_todos**: REQUIRED. Extract EVERY action item. Each needs: action, owner (KNOWN PERSON name), due_date, department (KNOWN DEPARTMENT code).
+   - **cascading_messages**: REQUIRED. What to communicate outside this meeting.
+   - **next_meeting**: REQUIRED if follow-up mentioned.
+   - **meeting_rating**: REQUIRED. List EACH attendee with rating or "To be submitted".
 
-3. Extract ALL tasks from the transcript — be aggressive. Create individual tasks with full descriptions and Dan Martell Definition of Done for each.
+2. Extract ALL tasks — be aggressive. Link each to a project from KNOWN PROJECTS using project_id.
 
-4. Group related tasks under parent tasks when 3+ tasks relate to the same initiative.
+3. Group related tasks under parent tasks when 3+ relate to the same initiative.
 
-5. If this is a recurring meeting OR there are unresolved issues/incomplete to-dos/planned follow-ups, create a meeting agenda for the NEXT occurrence pre-populated with carry-over items.
+4. Create a Meeting Register entry (create_meeting_register) with meeting metadata and link to the note.
 
-6. Provide a summary of everything created.
+5. For unresolved IDS issues, create EOS Issues (create_eos_issue) linked to the meeting note.
 
-**QUALITY CHECK before submitting:** Does your meeting note match the depth of a professional executive scribe? Are IDS discussion summaries 3-5 sentences each? Are ALL to-dos specific with real names and dates? If not, add more detail.
+6. If new speaker-to-person mappings are discovered, create Speaker Aliases (create_speaker_alias).
+
+7. If recurring meeting or unresolved issues, create a next meeting agenda.
+
+8. Provide a summary of everything created.
+
+**QUALITY CHECK:** IDS summaries 3-5 sentences? All to-dos specific with real names and dates? All projects from KNOWN PROJECTS?
 """
 
     results = {

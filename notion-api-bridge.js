@@ -1,5 +1,11 @@
 import express from 'express';
-import { createProject, createTask, getProjects, getTasks, notion, DATABASES } from './notion.js';
+import {
+  createProject, createTask, getProjects, getTasks, notion, DATABASES,
+  getPeople, getDepartments, getQuarterlyRocks, createRock,
+  getPlanningCycles, getScorecardMetrics, createScorecardMetric,
+  getEosIssues, createEosIssue, getSpeakerAliases, createSpeakerAlias,
+  getMeetingRegister, createMeetingRegister, getAgentConfig, getFullContext,
+} from './notion.js';
 
 const router = express.Router();
 
@@ -54,6 +60,133 @@ router.post('/tasks', async (req, res) => {
     res.json({ id: result.id, success: true });
   } catch (error) {
     console.error('Error creating task:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── People ─────────────────────────────────────────────────────────
+router.get('/people', async (req, res) => {
+  try {
+    const activeOnly = req.query.active !== 'false';
+    res.json(await getPeople(activeOnly));
+  } catch (error) {
+    console.error('Error fetching people:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Departments ────────────────────────────────────────────────────
+router.get('/departments', async (req, res) => {
+  try {
+    const activeOnly = req.query.active !== 'false';
+    res.json(await getDepartments(activeOnly));
+  } catch (error) {
+    console.error('Error fetching departments:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Quarterly Rocks ────────────────────────────────────────────────
+router.get('/rocks', async (req, res) => {
+  try { res.json(await getQuarterlyRocks()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+router.post('/rocks', async (req, res) => {
+  try {
+    const result = await createRock(req.body);
+    res.json({ id: result.id, success: true });
+  } catch (error) {
+    console.error('Error creating rock:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Planning Cycles ────────────────────────────────────────────────
+router.get('/planning-cycles', async (req, res) => {
+  try { res.json(await getPlanningCycles()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ─── Scorecard Metrics ──────────────────────────────────────────────
+router.get('/scorecard-metrics', async (req, res) => {
+  try { res.json(await getScorecardMetrics()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+router.post('/scorecard-metrics', async (req, res) => {
+  try {
+    const result = await createScorecardMetric(req.body);
+    res.json({ id: result.id, success: true });
+  } catch (error) {
+    console.error('Error creating metric:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── EOS Issues ─────────────────────────────────────────────────────
+router.get('/eos-issues', async (req, res) => {
+  try {
+    const unresolvedOnly = req.query.all !== 'true';
+    res.json(await getEosIssues(unresolvedOnly));
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+router.post('/eos-issues', async (req, res) => {
+  try {
+    const result = await createEosIssue(req.body);
+    res.json({ id: result.id, success: true });
+  } catch (error) {
+    console.error('Error creating EOS issue:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Speaker Aliases ────────────────────────────────────────────────
+router.get('/speaker-aliases', async (req, res) => {
+  try { res.json(await getSpeakerAliases()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+router.post('/speaker-aliases', async (req, res) => {
+  try {
+    const result = await createSpeakerAlias(req.body);
+    res.json({ id: result.id, success: true });
+  } catch (error) {
+    console.error('Error creating speaker alias:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Meeting Register ───────────────────────────────────────────────
+router.get('/meeting-register', async (req, res) => {
+  try { res.json(await getMeetingRegister()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+router.post('/meeting-register', async (req, res) => {
+  try {
+    const result = await createMeetingRegister(req.body);
+    res.json({ id: result.id, success: true });
+  } catch (error) {
+    console.error('Error creating meeting register entry:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Agent Config ───────────────────────────────────────────────────
+router.get('/agent-config', async (req, res) => {
+  try { res.json(await getAgentConfig()); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ─── Aggregated Context (single call for agent) ─────────────────────
+router.get('/context', async (req, res) => {
+  try {
+    const ctx = await getFullContext();
+    res.json(ctx);
+  } catch (error) {
+    console.error('Error fetching context:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

@@ -27,3 +27,6 @@ check-*.js
 add-task.js
 plan.md
 node_modules
+
+# Local data (transcripts, batch results)
+data/

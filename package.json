@@ -9,7 +9,14 @@
     "webhook": "node webhook-server.js",
     "agent": "cd agent && python -m uvicorn main:app --host 0.0.0.0 --port 8000",
     "agent:install": "cd agent && pip install -r requirements.txt",
-    "dev": "concurrently \"npm run webhook\" \"npm run agent\""
+    "dev": "concurrently \"npm run webhook\" \"npm run agent\"",
+    "pull": "node pull-transcripts.js",
+    "build-batch": "node build-batch.js",
+    "submit-batch": "node submit-batch.js",
+    "fetch-results": "node fetch-results.js",
+    "batch-status": "node submit-batch.js --status",
+    "batch-poll": "node submit-batch.js --poll",
+    "pipeline": "node pull-transcripts.js && node build-batch.js && node submit-batch.js"
   },
   "dependencies": {
     "@notionhq/client": "^2.2.14",
