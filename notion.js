@@ -107,7 +107,7 @@ export async function createProject(projectData) {
  * @param {string} taskData.description - Task description
  */
 export async function createTask(taskData) {
-  const { name, status, priority, dueDate, projectId, parentTaskId, description, definitionOfDone } = taskData;
+  const { name, status, priority, dueDate, projectId, parentTaskId, description, definitionOfDone, departmentIds, peopleIds } = taskData;
 
   const properties = {
     Name: {
@@ -121,14 +121,17 @@ export async function createTask(taskData) {
     }
   };
 
+  // Status is a "status" type — valid: To Do, Doing, Done
   if (status) {
+    const statusMap = { 'To Do': 'To Do', 'In Progress': 'Doing', 'Doing': 'Doing', 'Done': 'Done' };
     properties.Status = {
       status: {
-        name: status
+        name: statusMap[status] || status
       }
     };
   }
 
+  // Priority is a "status" type — valid: Low, Medium, High
   if (priority) {
     properties.Priority = {
       status: {
@@ -150,7 +153,7 @@ export async function createTask(taskData) {
       rich_text: [
         {
           text: {
-            content: description
+            content: description.slice(0, 2000)
           }
         }
       ]
@@ -174,6 +177,20 @@ export async function createTask(taskData) {
           id: parentTaskId
         }
       ]
+    };
+  }
+
+  // Department relation → Departments DB
+  if (departmentIds?.length) {
+    properties.Department = {
+      relation: departmentIds.map(id => ({ id }))
+    };
+  }
+
+  // People relation → People DB
+  if (peopleIds?.length) {
+    properties.People = {
+      relation: peopleIds.map(id => ({ id }))
     };
   }
 

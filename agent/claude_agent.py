@@ -6,6 +6,7 @@ from anthropic import Anthropic
 from prompts.system_prompt import build_system_prompt
 from long_meeting_processor import process_long_meeting, estimate_tokens
 from context_loader import load_context_for_prompt
+from output_validator import OutputValidator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,7 +18,6 @@ logger.info(f"NOTION_API_BASE configured as: {NOTION_API_BASE}")
 
 # Model configuration
 SONNET_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-HAIKU_MODEL = os.getenv("CLAUDE_HAIKU_MODEL", "claude-haiku-4-5-20251001")
 
 # Long meeting threshold (tokens)
 LONG_MEETING_THRESHOLD = int(os.getenv("LONG_MEETING_THRESHOLD_TOKENS", "10000"))
@@ -204,9 +204,11 @@ TOOLS = [
                 },
                 "overview": {"type": "string", "description": "Meeting overview (for General/non-EOS meetings)"},
                 "action_items": {"type": "array", "items": {"type": "string"}, "description": "Action items list (for General/non-EOS meetings)"},
-                "key_points": {"type": "array", "items": {"type": "string"}, "description": "Key discussion points (for General/non-EOS meetings)"}
+                "key_points": {"type": "array", "items": {"type": "string"}, "description": "Key discussion points (for General/non-EOS meetings)"},
+                "people_ids": {"type": "array", "items": {"type": "string"}, "description": "People IDs from KNOWN PEOPLE — ALL attendees of the meeting. ALWAYS populate this."},
+                "department_ids": {"type": "array", "items": {"type": "string"}, "description": "Department IDs from KNOWN DEPARTMENTS relevant to this meeting"}
             },
-            "required": ["title", "date", "meeting_type"]
+            "required": ["title", "date", "meeting_type", "people_ids"]
         }
     },
     {
@@ -218,12 +220,14 @@ TOOLS = [
                 "name": {"type": "string", "description": "Task name - clear and actionable"},
                 "description": {"type": "string", "description": "Task description - context, background, and what needs to be done"},
                 "definition_of_done": {"type": "string", "description": "Definition of Done - specific, measurable criteria that must be met for the task to be considered complete (Dan Martell style)"},
-                "priority": {"type": "string", "enum": ["High", "Medium", "Low"], "description": "Priority level"},
+                "priority": {"type": "string", "enum": ["High", "Medium", "Low"], "description": "Priority level (status type)"},
                 "due_date": {"type": "string", "description": "Due date (YYYY-MM-DD)"},
-                "status": {"type": "string", "enum": ["To Do", "In Progress", "Done"], "description": "Task status"},
-                "project_id": {"type": "string", "description": "Optional project ID to link to"}
+                "status": {"type": "string", "enum": ["To Do", "Doing", "Done"], "description": "Task status. MUST be one of: To Do, Doing, Done. NOT 'In Progress'."},
+                "project_id": {"type": "string", "description": "Project ID from KNOWN PROJECTS — REQUIRED"},
+                "department_ids": {"type": "array", "items": {"type": "string"}, "description": "Department IDs from KNOWN DEPARTMENTS to link this task to"},
+                "people_ids": {"type": "array", "items": {"type": "string"}, "description": "People IDs from KNOWN PEOPLE — the task owner/assignee. ALWAYS populate this — if no specific owner is mentioned, assign to the person who raised the topic or the meeting facilitator."}
             },
-            "required": ["name", "description", "definition_of_done"]
+            "required": ["name", "description", "definition_of_done", "project_id", "people_ids"]
         }
     },
     {
@@ -234,11 +238,13 @@ TOOLS = [
             "properties": {
                 "name": {"type": "string", "description": "Subtask name - clear and actionable"},
                 "description": {"type": "string", "description": "Subtask description - context and what needs to be done"},
-                "definition_of_done": {"type": "string", "description": "Definition of Done - specific, measurable criteria that must be met for the subtask to be considered complete"},
+                "definition_of_done": {"type": "string", "description": "Definition of Done - specific, measurable criteria"},
                 "priority": {"type": "string", "enum": ["High", "Medium", "Low"]},
                 "due_date": {"type": "string", "description": "Due date (YYYY-MM-DD)"},
                 "parent_task_id": {"type": "string", "description": "Parent task ID"},
-                "project_id": {"type": "string", "description": "Project ID"}
+                "project_id": {"type": "string", "description": "Project ID from KNOWN PROJECTS"},
+                "department_ids": {"type": "array", "items": {"type": "string"}, "description": "Department IDs"},
+                "people_ids": {"type": "array", "items": {"type": "string"}, "description": "People IDs"}
             },
             "required": ["name", "parent_task_id", "description", "definition_of_done"]
         }
@@ -266,21 +272,22 @@ TOOLS = [
     },
     {
         "name": "create_eos_issue",
-        "description": "Create an EOS Issue in Notion. Use for unresolved issues from IDS discussion.",
+        "description": "Create an EOS Issue in Notion for every IDS issue discussed (resolved or unresolved). Fill ALL fields with maximum detail — never leave optional fields empty if the information exists in the transcript.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "Short issue title"},
-                "issueDescription": {"type": "string", "description": "Full issue description"},
-                "priority": {"type": "string", "enum": ["Low", "Medium", "High"]},
-                "isResolved": {"type": "boolean"},
-                "resolutionNotes": {"type": "string"},
-                "raisedByIds": {"type": "array", "items": {"type": "string"}, "description": "People IDs who raised the issue"},
-                "departmentIds": {"type": "array", "items": {"type": "string"}, "description": "Department IDs"},
-                "projectIds": {"type": "array", "items": {"type": "string"}, "description": "Project IDs"},
-                "sourceMeetingIds": {"type": "array", "items": {"type": "string"}, "description": "Meeting Note IDs"}
+                "title": {"type": "string", "description": "Concise, specific issue title (5–10 words) using real nouns from the discussion. E.g., 'Inventory stockout risk — only 20 units left'. Never use generic labels."},
+                "issueDescription": {"type": "string", "description": "REQUIRED. Multi-paragraph rich description containing ALL four components:\n1. Problem Statement — what is the issue and why it matters to the business\n2. Root Cause — the underlying reason identified in the discussion\n3. Discussion Summary — 3–5 sentences capturing WHO said WHAT, specific numbers, proposals, and trade-offs discussed\n4. Solution / Status — use EOS language: 'Change it – [specific action]', 'End it – [what stops]', or 'Live with it – [what is accepted]'. If unresolved: 'Carry forward – needs further IDS.'"},
+                "priority": {"type": "string", "enum": ["Low", "Medium", "High"], "description": "High = urgent blocker or Rock-level impact with deadline < 3 days. Medium = important but not time-critical. Low = nice-to-have or backlog."},
+                "isResolved": {"type": "boolean", "description": "true only if a solution was fully agreed upon in this meeting. false if still open or partially discussed."},
+                "resolutionNotes": {"type": "string", "description": "ALWAYS populate. If resolved: summarise what was decided, who owns the action, and by when. If unresolved: 'Carry forward — needs further IDS at next L10. Key open questions: [list them]'"},
+                "raisedByIds": {"type": "array", "items": {"type": "string"}, "description": "REQUIRED. People IDs (from KNOWN PEOPLE) of who raised or owns the issue. Always populate this."},
+                "departmentIds": {"type": "array", "items": {"type": "string"}, "description": "REQUIRED. Department IDs (from KNOWN DEPARTMENTS) relevant to this issue. Always populate this."},
+                "projectIds": {"type": "array", "items": {"type": "string"}, "description": "REQUIRED. Project IDs (from KNOWN PROJECTS) this issue belongs to. Always populate this."},
+                "rockIds": {"type": "array", "items": {"type": "string"}, "description": "Quarterly Rock IDs (from KNOWN ROCKS) if this issue is directly tied to a Rock. Populate whenever applicable."},
+                "sourceMeetingIds": {"type": "array", "items": {"type": "string"}, "description": "REQUIRED. The meeting note page ID created earlier in this session. Always link the issue back to its source meeting."}
             },
-            "required": ["title"]
+            "required": ["title", "issueDescription", "resolutionNotes", "raisedByIds", "departmentIds", "projectIds", "sourceMeetingIds"]
         }
     },
     {
@@ -322,13 +329,29 @@ TOOLS = [
 ]
 
 
-async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = None) -> str:
+async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = None,
+                       validator: OutputValidator = None, context_section: str = "") -> str:
     """Execute a tool and return the result as a string.
 
     Args:
         projects_cache: Session-scoped dict for caching get_projects results.
-                        Pass the same dict across calls within one meeting.
+        validator: OutputValidator instance for cross-checking write operations.
+        context_section: Formatted Notion context for the validator.
     """
+    # ── Validate write operations before executing ──
+    write_tools = {"create_meeting_note", "create_task", "create_subtask",
+                   "create_meeting_register", "create_eos_issue",
+                   "create_speaker_alias", "create_meeting_agenda"}
+    if validator and tool_name in write_tools and context_section:
+        logger.info(f"  Validating {tool_name} payload...")
+        validation = await validator.validate(tool_name, tool_input, context_section)
+        if not validation["passed"]:
+            logger.warning(f"  VALIDATOR REJECTED {tool_name} — returning error to agent")
+            return f"VALIDATION FAILED for {tool_name}: The payload has critical errors. Corrections needed: {validation['corrections']}"
+        if validation["corrections"]:
+            logger.info(f"  Validator applied {len(validation['corrections'])} corrections")
+        tool_input = validation["payload"]
+
     logger.info(f"Connecting to Notion API at: {NOTION_API_BASE}")
     async with httpx.AsyncClient() as client:
         try:
@@ -357,9 +380,11 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                 return result_str
 
             elif tool_name == "create_meeting_note":
+                # Pass people_ids and department_ids alongside the rest of the payload
+                payload = dict(tool_input)
                 response = await client.post(
                     f"{NOTION_API_BASE}/api/notes",
-                    json=tool_input,
+                    json=payload,
                     timeout=30.0
                 )
                 result = response.json()
@@ -375,7 +400,9 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                         "priority": tool_input.get("priority", "Medium"),
                         "dueDate": tool_input.get("due_date"),
                         "status": tool_input.get("status", "To Do"),
-                        "projectId": tool_input.get("project_id")
+                        "projectId": tool_input.get("project_id"),
+                        "departmentIds": tool_input.get("department_ids", []),
+                        "peopleIds": tool_input.get("people_ids", []),
                     },
                     timeout=30.0
                 )
@@ -393,7 +420,9 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                         "dueDate": tool_input.get("due_date"),
                         "status": "To Do",
                         "parentTaskId": tool_input.get("parent_task_id"),
-                        "projectId": tool_input.get("project_id")
+                        "projectId": tool_input.get("project_id"),
+                        "departmentIds": tool_input.get("department_ids", []),
+                        "peopleIds": tool_input.get("people_ids", []),
                     },
                     timeout=30.0
                 )
@@ -539,17 +568,38 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
 
     # Determine processing method based on transcript length
     processing_method = "standard"
-    haiku_extraction_cost = 0.0
-    haiku_usage = {"input_tokens": 0, "output_tokens": 0}
+    extraction_cost = 0.0
+    extraction_usage = {"input_tokens": 0, "output_tokens": 0}
 
     if transcript_tokens > LONG_MEETING_THRESHOLD:
         # Two-pass processing: Haiku extracts, then Sonnet creates
         processing_method = "two_pass"
         logger.info(f"Long meeting detected: {transcript_tokens} tokens — using two-pass processing")
 
-        long_result = process_long_meeting(client, sentences)
-        haiku_extraction_cost = long_result["haiku_cost"]
-        haiku_usage = long_result["haiku_usage"]
+        # Build a brief context for Haiku so it preserves correct names
+        # This runs BEFORE the full context load, so build it from raw context if available
+        haiku_brief = ""
+        try:
+            import httpx as _hx
+            _resp = _hx.get(f"{NOTION_API_BASE}/api/context", timeout=15.0)
+            _ctx = _resp.json()
+            _rock_titles = [r.get("title", "") for r in _ctx.get("rocks", [])]
+            _people_names = [p.get("name", "") for p in _ctx.get("people", [])]
+            _dept_names = [d.get("name", "") for d in _ctx.get("departments", [])]
+            _custom = _ctx.get("agentConfig", {}).get("customInstructions", "")
+            haiku_brief = (
+                f"Known Rocks: {', '.join(_rock_titles[:10])}\n"
+                f"Known People: {', '.join(_people_names)}\n"
+                f"Known Departments: {', '.join(_dept_names)}\n"
+            )
+            if _custom:
+                haiku_brief += f"\n{_custom}\n"
+        except Exception as _e:
+            logger.warning(f"Could not load context brief for Haiku: {_e}")
+
+        long_result = process_long_meeting(client, sentences, context_brief=haiku_brief)
+        extraction_cost = long_result["extraction_cost"]
+        extraction_usage = long_result["extraction_usage"]
 
         transcript_text = (
             f"This is a LONG meeting (~{transcript_tokens} tokens across "
@@ -568,14 +618,10 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
     duration_mins = round(duration_raw)
     duration_seconds = round(duration_raw * 60)
 
-    # Detect complexity for model selection
+    # Model selection — always Sonnet
     complexity = detect_meeting_complexity(transcript_data)
-    if complexity == "simple":
-        selected_model = HAIKU_MODEL
-        logger.info(f"Meeting complexity: simple — using Haiku ({HAIKU_MODEL})")
-    else:
-        selected_model = SONNET_MODEL
-        logger.info(f"Meeting complexity: standard — using Sonnet ({SONNET_MODEL})")
+    selected_model = SONNET_MODEL
+    logger.info(f"Meeting complexity: {complexity} — using Sonnet ({SONNET_MODEL})")
 
     # ── Load fresh Notion context ──
     logger.info("Loading fresh Notion context for prompt injection...")
@@ -691,19 +737,23 @@ Do NOT call get_projects() — the project list is already provided above."""
             "total_output": 0,
             "cache_creation": 0,
             "cache_read": 0,
-            "haiku_input": haiku_usage["input_tokens"],
-            "haiku_output": haiku_usage["output_tokens"],
+            "extraction_input": extraction_usage["input_tokens"],
+            "extraction_output": extraction_usage["output_tokens"],
         }
     }
 
     # Session-scoped cache for tool results
     projects_cache = {}
 
+    # Initialize the output validator (Sonnet-powered cross-check layer)
+    validator = OutputValidator()
+    logger.info("Output validator initialized — all writes will be cross-checked against Notion data")
+
     try:
         messages = [{"role": "user", "content": prompt}]
 
         # Agentic loop - keep calling until no more tool use
-        max_iterations = 10
+        max_iterations = 30
         for iteration in range(max_iterations):
             logger.info(f"Claude iteration {iteration + 1} ({selected_model})...")
 
@@ -745,11 +795,14 @@ Do NOT call get_projects() — the project list is already provided above."""
                         results["messages"].append(block.text)
                 break
 
-            # Execute tools and add results
+            # Execute tools and add results (with validator cross-check)
             tool_results = []
             for tool_use in tool_uses:
                 logger.info(f"Executing tool: {tool_use.name} with input: {tool_use.input}")
-                result = await execute_tool(tool_use.name, tool_use.input, projects_cache)
+                result = await execute_tool(
+                    tool_use.name, tool_use.input, projects_cache,
+                    validator=validator, context_section=context_section
+                )
                 logger.info(f"Tool result: {result[:200]}...")
                 tool_results.append({
                     "type": "tool_result",
@@ -761,23 +814,18 @@ Do NOT call get_projects() — the project list is already provided above."""
 
         results["success"] = True
 
-        # Calculate cost
+        # Calculate cost — Sonnet rates: $3/MTok input, $15/MTok output
         tu = results["token_usage"]
-        if selected_model == HAIKU_MODEL:
-            input_rate, output_rate = 1.0, 5.0
-            cache_write_rate = 1.25  # 1.25x input rate
-            cache_read_rate = 0.1    # 0.1x input rate
-        else:
-            input_rate, output_rate = 3.0, 15.0
-            cache_write_rate = 3.75
-            cache_read_rate = 0.3
+        input_rate, output_rate = 3.0, 15.0
+        cache_write_rate = 3.75
+        cache_read_rate = 0.3
 
         input_cost = tu["total_input"] * input_rate / 1_000_000
         output_cost = tu["total_output"] * output_rate / 1_000_000
         cache_write_cost = tu["cache_creation"] * cache_write_rate / 1_000_000
         cache_read_cost = tu["cache_read"] * cache_read_rate / 1_000_000
-        # Haiku extraction pass cost (already calculated)
-        total_cost = input_cost + output_cost + cache_write_cost + cache_read_cost + haiku_extraction_cost
+        # Extraction pass cost (already calculated, also Sonnet)
+        total_cost = input_cost + output_cost + cache_write_cost + cache_read_cost + extraction_cost
 
         # Estimate what cache_read tokens would have cost without caching
         cache_savings = tu["cache_read"] * (input_rate - cache_read_rate) / 1_000_000
@@ -785,14 +833,24 @@ Do NOT call get_projects() — the project list is already provided above."""
         results["cost_analysis"] = {
             "total_cost_usd": round(total_cost, 4),
             "agentic_loop_cost": round(input_cost + output_cost + cache_write_cost + cache_read_cost, 4),
-            "haiku_extraction_cost": round(haiku_extraction_cost, 4),
+            "extraction_cost": round(extraction_cost, 4),
             "cache_savings_usd": round(cache_savings, 4),
             "model_used": selected_model,
             "processing_method": processing_method,
         }
 
+        # Add validator summary
+        val_summary = validator.get_summary()
+        results["validator"] = val_summary
+        validator_cost = val_summary.get("validator_cost_usd", 0)
+        total_cost += validator_cost
+
+        results["cost_analysis"]["validator_cost"] = round(validator_cost, 4)
+        results["cost_analysis"]["total_cost_usd"] = round(total_cost, 4)
+
         logger.info(f"Successfully processed meeting: {transcript_data.get('title')}")
         logger.info(f"  Cost: ${total_cost:.4f} (cache saved: ${cache_savings:.4f})")
+        logger.info(f"  Validator: {val_summary['total_validations']} checks, {val_summary['total_corrections']} corrections, ${validator_cost:.4f}")
         logger.info(f"  Method: {processing_method} | Model: {selected_model} | Complexity: {complexity}")
 
     except Exception as e:

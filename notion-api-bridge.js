@@ -446,7 +446,8 @@ router.post('/notes', async (req, res) => {
       meeting_info, segue, scorecard, rock_review, todo_review,
       headlines, ids_issues, conclude_todos, cascading_messages,
       next_meeting, meeting_rating,
-      overview, action_items, key_points
+      overview, action_items, key_points,
+      people_ids, department_ids
     } = req.body;
 
     const children = [];
@@ -521,6 +522,10 @@ router.post('/notes', async (req, res) => {
 
     if (project_id) {
       properties['Project'] = { relation: [{ id: project_id }] };
+    }
+
+    if (people_ids?.length) {
+      properties['People'] = { relation: people_ids.map(id => ({ id })) };
     }
 
     const result = await notion.pages.create({
