@@ -58,12 +58,30 @@ def _resolve_dept(dept_id: str, departments: list) -> str:
     return "Unknown"
 
 
-def _resolve_person_project(person: dict, departments: list) -> str:
-    """Derive a person's project/org from their department's Project field."""
+def _resolve_dept_project(dept: dict, projects: list) -> str:
+    """Resolve a department's project name from its projectIds relation."""
+    for pid in dept.get("projectIds", []):
+        proj = next((p for p in projects if p.get("id") == pid), None)
+        if proj:
+            return proj["name"]
+    return "—"
+
+
+def _resolve_person_project(person: dict, departments: list, projects: list) -> str:
+    """Derive a person's project/org — direct Projects relation takes priority, then department lookup."""
+    # Direct project membership
+    for pid in person.get("projectIds", []):
+        proj = next((p for p in projects if p.get("id") == pid), None)
+        if proj:
+            return proj["name"]
+    # Fall back: look up via department's projectIds
     for did in person.get("departmentIds", []):
         dept = next((d for d in departments if d.get("id") == did), None)
-        if dept and dept.get("project"):
-            return dept["project"]
+        if dept:
+            for pid in dept.get("projectIds", []):
+                proj = next((p for p in projects if p.get("id") == pid), None)
+                if proj:
+                    return proj["name"]
     return "—"
 
 
@@ -114,7 +132,7 @@ def format_context_for_prompt(ctx: dict, meeting_format: str = None) -> str:
         dept_str = ", ".join(dept_names) if dept_names else "—"
         role = p.get("role") or p.get("title") or "—"
         rel = ", ".join(p.get("relationship", [])) or "External"
-        proj = _resolve_person_project(p, departments)
+        proj = _resolve_person_project(p, departments, projects)
         lines.append(f"| {name} | {p['id']} | {role} | {dept_str} | {rel} | {proj} |")
     lines.append("")
 
@@ -182,7 +200,7 @@ def format_context_for_prompt(ctx: dict, meeting_format: str = None) -> str:
     lines.append("| Department | ID | Code | Level | Project |")
     lines.append("|------------|-----|------|-------|---------|")
     for d in departments:
-        proj = d.get('project') or '—'
+        proj = _resolve_dept_project(d, projects)
         lines.append(f"| {d['name']} | {d['id']} | {d.get('code', '—')} | {d.get('level', '—')} | {proj} |")
     lines.append("")
 

@@ -3,7 +3,7 @@ import {
   createProject, updateProject,
   createPerson, updatePerson,
   createTask, getProjects, getTasks, notion, DATABASES,
-  getPeople, getDepartments, getQuarterlyRocks, createRock,
+  getPeople, getDepartments, updateDepartment, getQuarterlyRocks, createRock,
   getPlanningCycles, getScorecardMetrics, createScorecardMetric,
   getEosIssues, createEosIssue,
   getSpeakerAliases, createSpeakerAlias, updateSpeakerAlias,
@@ -123,6 +123,16 @@ router.get('/departments', async (req, res) => {
     res.json(await getDepartments(activeOnly));
   } catch (error) {
     console.error('Error fetching departments:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.patch('/departments/:id', async (req, res) => {
+  try {
+    await updateDepartment(req.params.id, req.body);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error updating department:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

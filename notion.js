@@ -433,6 +433,7 @@ export async function getPeople(activeOnly = true) {
     relationship: getMultiSelect(p, 'Relationship'),
     jobDescription: getRichText(p, 'Job Description'),
     positionLevel: getSelect(p, 'Position Level'),
+    projectIds: getRelationIds(p, 'Projects'),
   }));
 }
 
@@ -452,8 +453,18 @@ export async function getDepartments(activeOnly = true) {
     teamMemberIds: getRelationIds(d, 'Team Members'),
     description: getRichText(d, 'Description '),
     headCount: getRichText(d, 'Head Count'),
-    project: getSelect(d, 'Project'),
+    projectIds: getRelationIds(d, 'Project'),
   }));
+}
+
+export async function updateDepartment(deptId, updates) {
+  const properties = {};
+  if (updates.projectId !== undefined) {
+    properties['Project'] = {
+      relation: updates.projectId ? [{ id: updates.projectId }] : []
+    };
+  }
+  return notion.pages.update({ page_id: deptId, properties });
 }
 
 // ─── Quarterly Rocks ─────────────────────────────────────────────────────────
