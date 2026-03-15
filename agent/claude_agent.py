@@ -1,6 +1,8 @@
 import os
+import asyncio
 import httpx
 import logging
+import anthropic as _anthropic
 from datetime import datetime
 from anthropic import Anthropic
 from prompts.system_prompt import build_system_prompt
@@ -523,6 +525,24 @@ def detect_meeting_complexity(transcript_data: dict) -> str:
     return "standard"
 
 
+_RETRY_DELAYS = [5, 15, 30, 60, 120]  # seconds between attempts (5 total)
+
+
+async def _call_with_retry(client, **kwargs):
+    """Call Claude API with exponential backoff for rate limits and overload errors."""
+    for attempt, delay in enumerate(_RETRY_DELAYS):
+        try:
+            return client.messages.create(**kwargs)
+        except (_anthropic.RateLimitError, _anthropic.InternalServerError, _anthropic.APIConnectionError) as e:
+            if attempt == len(_RETRY_DELAYS) - 1:
+                raise
+            logger.warning(
+                f"Claude API error ({type(e).__name__}), retrying in {delay}s "
+                f"(attempt {attempt + 1}/{len(_RETRY_DELAYS)})..."
+            )
+            await asyncio.sleep(delay)
+
+
 async def process_meeting_transcript(transcript_data: dict) -> dict:
     """
     Process a meeting transcript using Claude API with optimized token usage.
@@ -777,7 +797,8 @@ Do NOT call get_projects() — the project list is already provided above."""
         for iteration in range(max_iterations):
             logger.info(f"Claude iteration {iteration + 1} ({selected_model})...")
 
-            response = client.messages.create(
+            response = await _call_with_retry(
+                client,
                 model=selected_model,
                 max_tokens=8192,
                 system=CACHED_SYSTEM,

@@ -1,5 +1,7 @@
 import os
+import time
 import logging
+import anthropic as _anthropic
 from anthropic import Anthropic
 from typing import List, Dict, Tuple, Optional
 
@@ -53,6 +55,24 @@ def chunk_transcript(sentences: List[Dict], max_tokens_per_chunk: int = MAX_TOKE
     return chunks
 
 
+_RETRY_DELAYS = [5, 15, 30, 60, 120]
+
+
+def _sync_call_with_retry(client, **kwargs):
+    """Sync retry wrapper for extraction calls."""
+    for attempt, delay in enumerate(_RETRY_DELAYS):
+        try:
+            return client.messages.create(**kwargs)
+        except (_anthropic.RateLimitError, _anthropic.InternalServerError, _anthropic.APIConnectionError) as e:
+            if attempt == len(_RETRY_DELAYS) - 1:
+                raise
+            logger.warning(
+                f"Claude API error ({type(e).__name__}), retrying in {delay}s "
+                f"(attempt {attempt + 1}/{len(_RETRY_DELAYS)})..."
+            )
+            time.sleep(delay)
+
+
 def extract_from_chunk(client: Anthropic, chunk: str, chunk_num: int, total_chunks: int, context_brief: str = "") -> Tuple[str, dict]:
     """Use Haiku to extract key info from a single transcript chunk.
 
@@ -75,7 +95,8 @@ def extract_from_chunk(client: Anthropic, chunk: str, chunk_num: int, total_chun
         system_prompt += f"\nADDITIONAL CONTEXT:\n{context_brief}\n"
     system_prompt += "\nExtract actionable information concisely and thoroughly. Preserve all names exactly."
 
-    response = client.messages.create(
+    response = _sync_call_with_retry(
+        client,
         model=SONNET_MODEL,
         max_tokens=2048,
         system=system_prompt,
