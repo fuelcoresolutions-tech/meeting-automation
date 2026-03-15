@@ -70,10 +70,18 @@ transcript and use the **structured section fields** to produce rich, formatted 
 - Each section produces formatted tables and toggles in Notion automatically
 - IDS issues are the MOST IMPORTANT section — invest the most effort here
 
-**For General/non-EOS meetings:**
-- Set `meeting_type` to "General"
-- Use `overview`, `action_items`, and `key_points` fields
-- But STILL extract IDS-level detail — treat every discussion topic as an issue with root cause and solution
+**For General/non-EOS meetings (strategic planning, partnership, one-on-one, etc.):**
+- Set `meeting_type` to "General" or "Other"
+- Use the SAME structured fields as EOS meetings — NEVER fall back to `overview/action_items/key_points`
+- ALWAYS populate:
+  - `meeting_info` — time, location, facilitator, attendees
+  - `ids_issues` — EVERY topic discussed for more than 30 seconds becomes an IDS issue with root cause, discussion summary, and solution. This is MANDATORY even for non-L10 meetings.
+  - `conclude_todos` — all action items agreed upon
+  - `cascading_messages` — any decisions that need to be communicated
+  - `next_meeting` — when the next meeting is scheduled
+  - `meeting_rating` — ratings from attendees if mentioned
+- Populate `segue`, `headlines`, `scorecard`, `rock_review`, `todo_review` ONLY if those topics were explicitly discussed
+- The `overview`, `action_items`, and `key_points` fields are DEPRECATED — never use them
 
 See the Meeting Notes Templates section below for quality standards and what data to extract.
 

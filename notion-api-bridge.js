@@ -832,4 +832,95 @@ router.post('/agendas', async (req, res) => {
   }
 });
 
+// ─── Transcript Storage ───────────────────────────────────────────
+
+function formatTimestamp(seconds) {
+  if (!seconds && seconds !== 0) return '';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function buildTranscriptBlocks(sentences, transcriptUrl) {
+  const blocks = [];
+
+  // Header
+  blocks.push(buildHeading(2, '📄 FULL TRANSCRIPT'));
+  if (transcriptUrl) {
+    blocks.push({
+      object: 'block', type: 'paragraph',
+      paragraph: {
+        rich_text: [
+          richText('View on Fireflies: '),
+          { type: 'text', text: { content: transcriptUrl, link: { url: transcriptUrl } } }
+        ]
+      }
+    });
+  }
+  blocks.push(buildDivider());
+
+  // Group sentences into segments of ~30 per block
+  const CHUNK = 30;
+  for (let i = 0; i < sentences.length; i += CHUNK) {
+    const group = sentences.slice(i, i + CHUNK);
+    const lines = group.map(s => {
+      const ts = formatTimestamp(s.start_time ?? s.raw_start_time ?? null);
+      const speaker = s.speaker_name || '';
+      const prefix = ts && speaker ? `[${ts}] ${speaker}: `
+                   : ts            ? `[${ts}] `
+                   : speaker       ? `${speaker}: `
+                   : '';
+      return prefix + (s.text || '').trim();
+    });
+    const content = lines.join('\n');
+    // Notion paragraph text has a 2000 char limit — further split if needed
+    for (let j = 0; j < content.length; j += 1900) {
+      blocks.push(buildParagraph([{ text: content.slice(j, j + 1900), bold: false }]));
+    }
+  }
+
+  return blocks;
+}
+
+// POST /api/notes/:id/transcript — append transcript as child page inside meeting note
+router.post('/notes/:id/transcript', async (req, res) => {
+  try {
+    const noteId = req.params.id;
+    const { sentences = [], transcript_url } = req.body;
+
+    if (!sentences.length) {
+      return res.status(400).json({ error: 'sentences array is required and must not be empty' });
+    }
+
+    // 1. Create child page inside the meeting note
+    const childPage = await notion.pages.create({
+      parent: { page_id: noteId },
+      icon: { type: 'emoji', emoji: '📄' },
+      properties: {
+        title: { title: [{ text: { content: '📄 Full Transcript' } }] }
+      }
+    });
+
+    const childPageId = childPage.id;
+
+    // 2. Build transcript blocks
+    const allBlocks = buildTranscriptBlocks(sentences, transcript_url);
+
+    // 3. Append in batches of 100 (Notion API limit)
+    const BATCH = 100;
+    for (let i = 0; i < allBlocks.length; i += BATCH) {
+      await notion.blocks.children.append({
+        block_id: childPageId,
+        children: allBlocks.slice(i, i + BATCH)
+      });
+    }
+
+    console.log(`Appended transcript (${sentences.length} sentences, ${allBlocks.length} blocks) to note ${noteId}`);
+    res.json({ success: true, child_page_id: childPageId, blocks_written: allBlocks.length });
+  } catch (error) {
+    console.error('Error appending transcript:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;

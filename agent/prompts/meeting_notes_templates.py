@@ -102,15 +102,29 @@ DAY 2 (Execution Focus):
 - Long-term IDS — full treatment
 - Rollout plan — who communicates what to whom, when
 
-### General Meeting Notes (Non-EOS)
+### General Meeting Notes (Non-EOS) — Strategic Planning, Partnership, One-On-One, etc.
 
-Even for non-EOS meetings, maintain the SAME depth standard:
-- Meeting Overview: Purpose, context, and who called the meeting
-- Key Discussion Points: DETAILED — capture actual reasoning, proposals, and debate
-- Decisions Made: Each decision with full rationale and who made it
-- Action Items: Specific tasks with owner, due date, and department
-- Issues for Future Discussion: Parked items with brief context on why they were parked
-- Next Steps: Specific follow-up meetings, checkpoints, or deadlines
+Use the SAME structured fields as L10 meetings — the schema is identical. NEVER use the deprecated overview/action_items/key_points fields.
+
+**MANDATORY fields (regardless of meeting type):**
+- `meeting_info`: time, location, facilitator, attendees
+- `ids_issues`: EVERY topic discussed for 30+ seconds becomes an IDS issue. This is NON-NEGOTIABLE. A 60–90 minute strategic meeting will typically have 4–8 IDS issues. Each must have title, issue statement, root_cause, discussion_summary (3-5 sentences), and EOS solution language.
+- `conclude_todos`: ALL action items agreed upon, each with owner, due date, department
+- `cascading_messages`: Decisions that must be communicated outside the meeting
+
+**Optional fields — populate if content exists:**
+- `segue`: if attendees shared personal/professional wins at the start
+- `scorecard`: if numbers, KPIs, or targets were reviewed
+- `rock_review`: if quarterly priorities were reviewed
+- `todo_review`: if last meeting's to-dos were reviewed
+- `headlines`: if customer or employee updates were shared
+- `meeting_rating`: if attendees rated the meeting
+
+**IDS Issues for non-L10 meetings — same depth standard:**
+Each discussion topic (strategy decision, problem raised, plan reviewed) is an IDS issue:
+- Strategy topics: "Root Cause: lack of clear framework/decision" → "Change it – [specific framework adopted]"
+- Problems raised: document WHO raised it, WHAT was proposed, WHAT was decided
+- Plans reviewed: document what was approved, what was changed, what was deferred
 
 ### Notes Formatting Rules
 

@@ -747,6 +747,7 @@ Do NOT call get_projects() — the project list is already provided above."""
         "success": False,
         "error": None,
         "summary": None,
+        "created_note_id": None,
         "processing_method": processing_method,
         "model_used": selected_model,
         "complexity": complexity,
@@ -823,6 +824,12 @@ Do NOT call get_projects() — the project list is already provided above."""
                     validator=validator, context_section=context_section
                 )
                 logger.info(f"Tool result: {result[:200]}...")
+                # Capture the created meeting note ID for transcript attachment
+                if tool_use.name == "create_meeting_note" and "with ID:" in result:
+                    try:
+                        results["created_note_id"] = result.split("with ID:")[-1].strip()
+                    except Exception:
+                        pass
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_use.id,

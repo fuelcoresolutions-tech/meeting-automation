@@ -12,7 +12,9 @@ const PORT = process.env.PORT || 3000;
 const CLAUDE_AGENT_URL = process.env.CLAUDE_AGENT_URL || 'http://localhost:8000';
 
 // Parse JSON bodies and preserve raw body for signature verification
+// 5mb limit to accommodate large transcript payloads (1500+ sentences)
 app.use(express.json({
+  limit: '5mb',
   verify: (req, res, buf) => {
     req.rawBody = buf.toString();
   }

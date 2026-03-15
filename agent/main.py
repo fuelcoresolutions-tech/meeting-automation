@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import traceback
+import httpx
 from dotenv import load_dotenv
 
 # Load environment variables from parent directory
@@ -129,6 +130,41 @@ async def process_transcript(transcript: TranscriptData, background_tasks: Backg
     )
 
 
+NOTION_API_BASE = os.getenv("NOTION_API_BASE", "http://127.0.0.1:8080")
+
+
+async def _append_transcript_to_note(note_id: str, transcript_data: dict):
+    """After agent completes, store the raw transcript as a child page in the meeting note."""
+    sentences = transcript_data.get("sentences", [])
+    if not sentences:
+        logger.info("No sentences to append — skipping transcript storage")
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{NOTION_API_BASE}/api/notes/{note_id}/transcript",
+                json={
+                    "sentences": [
+                        {
+                            "speaker_name": s.get("speaker_name"),
+                            "start_time": s.get("start_time"),
+                            "text": s.get("text", ""),
+                        }
+                        for s in sentences
+                    ],
+                    "transcript_url": transcript_data.get("transcript_url"),
+                },
+                timeout=120.0,
+            )
+            data = resp.json()
+            if data.get("success"):
+                logger.info(f"Transcript appended: {data.get('blocks_written')} blocks → child page {data.get('child_page_id')}")
+            else:
+                logger.warning(f"Transcript append returned: {data}")
+    except Exception as e:
+        logger.warning(f"Transcript append failed (non-critical): {e}")
+
+
 async def process_transcript_background(transcript_data: dict):
     """Background task to process transcript — queued so only 1 runs at a time."""
     meeting_id = transcript_data["id"]
@@ -148,6 +184,14 @@ async def process_transcript_background(transcript_data: dict):
                 "result": result
             }
             logger.info(f"Completed processing for meeting: {meeting_id}")
+
+            # Auto-append raw transcript as child page inside the meeting note
+            note_id = result.get("created_note_id")
+            if note_id:
+                logger.info(f"Appending transcript to note {note_id}...")
+                await _append_transcript_to_note(note_id, transcript_data)
+            else:
+                logger.warning("No created_note_id in result — transcript not appended")
 
         except Exception as e:
             logger.error(f"Error processing meeting {meeting_id}: {e}")
