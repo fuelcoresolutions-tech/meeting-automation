@@ -29,7 +29,7 @@ const DATABASES = {
  * @param {Date} projectData.dueDate - Project due date
  */
 export async function createProject(projectData) {
-  const { name, status, description, dueDate, keywords, client } = projectData;
+  const { name, status, description, dueDate, keywords } = projectData;
 
   const properties = {
     Name: {
@@ -67,14 +67,8 @@ export async function createProject(projectData) {
 
   if (keywords) {
     const keywordsStr = Array.isArray(keywords) ? keywords.join(', ') : keywords;
-    properties['Keywords'] = {
+    properties['Key Words'] = {
       rich_text: [{ type: 'text', text: { content: keywordsStr.slice(0, 2000) } }]
-    };
-  }
-
-  if (client) {
-    properties['Client'] = {
-      rich_text: [{ type: 'text', text: { content: client.slice(0, 2000) } }]
     };
   }
 
@@ -113,6 +107,105 @@ export async function createProject(projectData) {
     console.error('Error creating project:', error.message);
     throw error;
   }
+}
+
+/**
+ * Update an existing project's description, keywords, or client
+ */
+export async function updateProject(projectId, updates) {
+  const properties = {};
+
+  if (updates.description !== undefined) {
+    properties['Project Description'] = {
+      rich_text: [{ type: 'text', text: { content: (updates.description || '').slice(0, 2000) } }]
+    };
+  }
+  if (updates.keywords !== undefined) {
+    const keywordsStr = Array.isArray(updates.keywords) ? updates.keywords.join(', ') : (updates.keywords || '');
+    properties['Key Words'] = {
+      rich_text: [{ type: 'text', text: { content: keywordsStr.slice(0, 2000) } }]
+    };
+  }
+
+  return notion.pages.update({ page_id: projectId, properties });
+}
+
+/**
+ * Update a speaker alias's notes field
+ */
+export async function updateSpeakerAlias(aliasId, updates) {
+  const properties = {};
+  if (updates.notes !== undefined) {
+    properties['Notes'] = {
+      rich_text: [{ type: 'text', text: { content: (updates.notes || '').slice(0, 2000) } }]
+    };
+  }
+  if (updates.confidence !== undefined) {
+    properties['Confidence'] = { number: updates.confidence };
+  }
+  return notion.pages.update({ page_id: aliasId, properties });
+}
+
+/**
+ * Update the agent config custom instructions
+ */
+export async function updateAgentConfig(configId, updates) {
+  const properties = {};
+  if (updates.customInstructions !== undefined) {
+    properties['Custom Agent Instructions'] = {
+      rich_text: [{ type: 'text', text: { content: (updates.customInstructions || '').slice(0, 2000) } }]
+    };
+  }
+  if (updates.defaultTodoDueDays !== undefined) {
+    properties['Default Todo Due Days'] = { number: updates.defaultTodoDueDays };
+  }
+  if (updates.minConfidenceThreshold !== undefined) {
+    properties['Min Confidence Threshold'] = { number: updates.minConfidenceThreshold };
+  }
+  return notion.pages.update({ page_id: configId, properties });
+}
+
+/**
+ * Create a new person in the People database (for external contacts)
+ */
+export async function createPerson(personData) {
+  const { name, role, email, jobDescription, relationship, company } = personData;
+  const properties = {
+    'Full Name': { title: [{ text: { content: name } }] },
+    'Is Active Member': { checkbox: true }
+  };
+  if (role) properties['Role Title'] = { rich_text: [{ type: 'text', text: { content: role } }] };
+  if (email) properties['Email'] = { email };
+  if (company) properties['Company'] = { rich_text: [{ type: 'text', text: { content: company } }] };
+  if (jobDescription) {
+    properties['Job Description'] = {
+      rich_text: [{ type: 'text', text: { content: jobDescription.slice(0, 2000) } }]
+    };
+  }
+  if (relationship?.length) {
+    properties['Relationship'] = { multi_select: relationship.map(r => ({ name: r })) };
+  }
+  return notion.pages.create({ parent: { database_id: DATABASES.people }, properties });
+}
+
+/**
+ * Update a person's job description or position level
+ */
+export async function updatePerson(personId, updates) {
+  const properties = {};
+
+  if (updates.jobDescription !== undefined) {
+    properties['Job Description'] = {
+      rich_text: [{ type: 'text', text: { content: (updates.jobDescription || '').slice(0, 2000) } }]
+    };
+  }
+  if (updates.positionLevel !== undefined) {
+    properties['Position Level'] = {
+      multi_select: updates.positionLevel ? [{ name: updates.positionLevel }] : []
+    };
+  }
+
+  return notion.pages.update({ page_id: personId, properties });
 }
 
 /**
@@ -568,7 +661,7 @@ export async function getFullContext() {
       status: p.properties?.Status?.status?.name || 'Unknown',
       departmentIds: (p.properties?.Departments?.relation || []).map(r => r.id),
       description: (p.properties?.['Project Description']?.rich_text || []).map(t => t.plain_text).join('') || '',
-      keywords: (p.properties?.Keywords?.rich_text || []).map(t => t.plain_text).join('').split(',').map(k => k.trim()).filter(k => k),
+      keywords: (p.properties?.['Key Words']?.rich_text || []).map(t => t.plain_text).join('').split(',').map(k => k.trim()).filter(k => k),
       client: (p.properties?.Client?.rich_text || []).map(t => t.plain_text).join('') || '',
       projectLeadIds: (p.properties?.['Project Lead']?.relation || []).map(r => r.id),
     }))),

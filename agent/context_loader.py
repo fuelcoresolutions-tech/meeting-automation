@@ -24,13 +24,18 @@ async def fetch_notion_context() -> dict:
         response = await client.get(url, timeout=30.0)
         response.raise_for_status()
         ctx = response.json()
+    n_people = len(ctx.get('people', []))
+    n_projects = len(ctx.get('projects', []))
+    total_kw = sum(len(p.get('keywords', [])) for p in ctx.get('projects', []))
+    n_depts = len(ctx.get('departments', []))
+    n_rocks = len(ctx.get('rocks', []))
+    n_aliases = len(ctx.get('speakerAliases', []))
+    n_metrics = len(ctx.get('scorecardMetrics', []))
+    n_issues = len([i for i in ctx.get('eosIssues', []) if not i.get('isResolved')])
     logger.info(
-        f"Context loaded: {len(ctx.get('people', []))} people, "
-        f"{len(ctx.get('projects', []))} projects "
-        f"({sum(len(p.get('keywords', [])) for p in ctx.get('projects', []))} keywords), "
-        f"{len(ctx.get('departments', []))} departments, "
-        f"{len(ctx.get('rocks', []))} rocks, "
-        f"{len(ctx.get('speakerAliases', []))} aliases"
+        f"Context loaded: {n_people} people, {n_projects} projects ({total_kw} keywords), "
+        f"{n_depts} depts, {n_rocks} rocks, {n_aliases} aliases, "
+        f"{n_metrics} metrics, {n_issues} open issues"
     )
     return ctx
 
@@ -92,16 +97,15 @@ def format_context_for_prompt(ctx: dict, meeting_format: str = None) -> str:
     # ── People ──
     lines.append("### KNOWN PEOPLE")
     lines.append("Match transcript speakers to these names. If someone is NOT here, add to new_people.")
-    lines.append("| Name | ID | Role | Department | Job Description | Level |")
-    lines.append("|------|-----|------|------------|-----------------|-------|")
+    lines.append("| Name | ID | Role | Department | Relationship |")
+    lines.append("|------|-----|------|------------|--------------|")
     for p in people:
+        name = p['name'].strip()  # normalize trailing spaces
         dept_names = [_resolve_dept(did, departments) for did in p.get("departmentIds", [])]
         dept_str = ", ".join(dept_names) if dept_names else "—"
         role = p.get("role") or p.get("title") or "—"
-        job_desc = p.get("jobDescription", "") or ""
-        job_desc_short = (job_desc[:80] + "...") if len(job_desc) > 80 else job_desc or "—"
-        level = p.get("positionLevel", "") or "—"
-        lines.append(f"| {p['name']} | {p['id']} | {role} | {dept_str} | {job_desc_short} | {level} |")
+        rel = ", ".join(p.get("relationship", [])) or "External"
+        lines.append(f"| {name} | {p['id']} | {role} | {dept_str} | {rel} |")
     lines.append("")
 
     # ── Speaker Inference Guide ──
@@ -109,43 +113,58 @@ def format_context_for_prompt(ctx: dict, meeting_format: str = None) -> str:
     if people_with_jobs:
         lines.append("### SPEAKER INFERENCE GUIDE (For In-Person / Unlabelled Meetings)")
         lines.append("Match speech content and topics to the job descriptions below to identify speakers.")
-        lines.append("Use confidence scores: High (0.85+) = name mentioned + topic match; Medium (0.65–0.84) = topic match only; Low (<0.65) = use 'Unknown Speaker N'.")
+        lines.append("Use confidence: High (0.85+) = name mentioned + topic match; Medium (0.65–0.84) = topic match only; Low (<0.65) = 'Unknown Speaker N'.")
         lines.append("")
         for p in people_with_jobs:
+            name = p['name'].strip()
             role = p.get("role") or p.get("title") or "Unknown Role"
-            level = p.get("positionLevel", "") or ""
-            label = f"{role}, {level}" if level else role
-            lines.append(f"**{p['name']}** ({label}):")
+            lines.append(f"**{name}** — {role} (ID: {p['id']}):")
             lines.append(f"  {p['jobDescription']}")
             lines.append("")
 
     # ── Speaker Aliases ──
     lines.append("### KNOWN SPEAKER ALIASES")
-    lines.append("| Alias | Person | Confidence | Notes |")
-    lines.append("|-------|--------|------------|-------|")
+    lines.append("When Fireflies labels a speaker with one of these aliases, resolve to the person ID shown.")
+    lines.append("| Alias | Resolved Person | Person ID | Confidence |")
+    lines.append("|-------|----------------|-----------|------------|")
     for a in aliases:
-        person_names = [_resolve_name(pid, people) for pid in a.get("personIds", [])]
-        person_str = ", ".join(person_names) if person_names else "Unknown"
-        notes = a.get("notes", "") or "—"
-        notes_short = (notes[:60] + "...") if len(notes) > 60 else notes
-        lines.append(f"| {a['alias']} | {person_str} | {a.get('confidence', '?')} | {notes_short} |")
+        person_names = [_resolve_name(pid, people).strip() for pid in a.get("personIds", [])]
+        person_ids = a.get("personIds", [])
+        person_str = ", ".join(person_names) if person_names else "⚠️ UNRESOLVED — add to new_people"
+        id_str = ", ".join(person_ids) if person_ids else "—"
+        conf = a.get("confidence", "?")
+        lines.append(f"| {a['alias']} | {person_str} | {id_str} | {conf} |")
     lines.append("")
 
     # ── Projects ──
     lines.append("### KNOWN PROJECTS")
     lines.append("ALL tasks and notes MUST link to one of these projects by ID. NEVER invent project names.")
     lines.append("Use Keywords and Description to match transcript topics to the correct project(s).")
-    lines.append("| Project Name | ID | Status | Client | Keywords | Description |")
-    lines.append("|--------------|-----|--------|--------|----------|-------------|")
+    lines.append("| Project Name | ID | Status | Client | Keywords |")
+    lines.append("|--------------|-----|--------|--------|----------|")
     for p in projects:
         keywords_str = ", ".join(p.get("keywords", [])) if p.get("keywords") else "—"
         client = p.get("client", "") or "—"
-        description = p.get("description", "") or ""
-        desc_short = (description[:100] + "...") if len(description) > 100 else description or "—"
-        lines.append(f"| {p['name']} | {p['id']} | {p.get('status', '?')} | {client} | {keywords_str} | {desc_short} |")
+        lines.append(f"| {p['name']} | {p['id']} | {p.get('status', '?')} | {client} | {keywords_str} |")
     if not projects:
-        lines.append("| (no projects found) | — | — | — | — | — |")
+        lines.append("| (no projects found) | — | — | — | — |")
     lines.append("")
+
+    # ── Full Project Descriptions (for cross-project topic matching) ──
+    lines.append("### PROJECT DESCRIPTIONS (Read carefully for cross-project detection)")
+    lines.append("When a transcript covers topics from multiple projects, link the meeting note to ALL relevant project IDs using project_ids array. Route each task to the most specific matching project.")
+    lines.append("")
+    for p in projects:
+        description = p.get("description", "") or ""
+        keywords = p.get("keywords", [])
+        lines.append(f"**{p['name']}** (ID: `{p['id']}`)")
+        if keywords:
+            lines.append(f"  Keywords: {', '.join(keywords)}")
+        if description:
+            lines.append(f"  {description}")
+        else:
+            lines.append("  _(No description yet — match by project name and keywords only)_")
+        lines.append("")
 
     # ── Departments ──
     lines.append("### KNOWN DEPARTMENTS")
@@ -176,25 +195,39 @@ def format_context_for_prompt(ctx: dict, meeting_format: str = None) -> str:
     # ── Quarterly Rocks ──
     lines.append("### KNOWN QUARTERLY ROCKS")
     lines.append("When the transcript discusses a topic matching a rock, reference its exact title.")
-    lines.append("| Rock Title | ID | Status | Owner | Department |")
-    lines.append("|------------|-----|--------|-------|------------|")
+    lines.append("| Rock Title | ID | Status | Owner | Due | Department |")
+    lines.append("|------------|-----|--------|-------|-----|------------|")
     for r in rocks:
-        owners = [_resolve_name(oid, people) for oid in r.get("ownerIds", [])]
+        owners = [_resolve_name(oid, people).strip() for oid in r.get("ownerIds", [])]
         owner_str = ", ".join(owners) if owners else "—"
         depts = [_resolve_dept(did, departments) for did in r.get("departmentIds", [])]
         dept_str = ", ".join(depts) if depts else "—"
-        lines.append(f"| {r['title']} | {r['id']} | {r.get('status', '?')} | {owner_str} | {dept_str} |")
+        due = r.get("dueDate", "") or "—"
+        status = r.get("status", "?")
+        # Flag overdue rocks
+        overdue_flag = ""
+        if due and due != "—" and status not in ("Done",):
+            if due < now:
+                overdue_flag = " ⚠️OVERDUE"
+        lines.append(f"| {r['title']} | {r['id']} | {status}{overdue_flag} | {owner_str} | {due} | {dept_str} |")
     lines.append("")
 
     # ── Scorecard Metrics ──
     if metrics:
         lines.append("### KNOWN SCORECARD METRICS")
-        lines.append("| Metric | Owner | Target | Current | On Track |")
-        lines.append("|--------|-------|--------|---------|----------|")
+        lines.append("When the transcript mentions actual figures for these metrics, note them. If a metric value is mentioned, update it.")
+        lines.append("| Metric | Owner | Target | Current | On Track | Frequency |")
+        lines.append("|--------|-------|--------|---------|----------|-----------|")
         for m in metrics:
-            owners = [_resolve_name(oid, people) for oid in m.get("ownerIds", [])]
+            owners = [_resolve_name(oid, people).strip() for oid in m.get("ownerIds", [])]
             owner_str = ", ".join(owners) if owners else "—"
-            lines.append(f"| {m['name']} | {owner_str} | {m.get('target', '—')} | {m.get('currentValue', '—')} | {'✅' if m.get('onTrack') else '❌'} |")
+            current = m.get("currentValue")
+            current_str = str(current) if current is not None else "NOT TRACKED"
+            target = m.get("target")
+            target_str = str(target) if target is not None else "NOT SET"
+            on_track = "✅" if m.get("onTrack") else "❌"
+            freq = m.get("frequency", "—")
+            lines.append(f"| {m['name']} | {owner_str} | {target_str} | {current_str} | {on_track} | {freq} |")
         lines.append("")
 
     # ── Unresolved EOS Issues ──

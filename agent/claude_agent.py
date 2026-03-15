@@ -47,7 +47,8 @@ TOOLS = [
                     "enum": ["L10", "Quarterly", "Annual", "Same Page", "State of Company", "Quarterly Conversation", "Other", "General"],
                     "description": "Detected meeting type from transcript"
                 },
-                "project_id": {"type": "string", "description": "Project ID to link to"},
+                "project_id": {"type": "string", "description": "Primary project ID (use project_ids instead when meeting spans multiple projects)"},
+                "project_ids": {"type": "array", "items": {"type": "string"}, "description": "ALL relevant project IDs for this meeting. Use when transcript covers topics from multiple projects (e.g., Fuel Core + Lexor Foundation). Creates ONE note linked to all projects — do NOT create duplicate notes."},
                 "meeting_info": {
                     "type": "object",
                     "description": "Meeting metadata (date, time, location, facilitator, scribe, attendees)",

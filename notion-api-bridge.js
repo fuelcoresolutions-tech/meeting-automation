@@ -1,10 +1,14 @@
 import express from 'express';
 import {
-  createProject, createTask, getProjects, getTasks, notion, DATABASES,
+  createProject, updateProject,
+  createPerson, updatePerson,
+  createTask, getProjects, getTasks, notion, DATABASES,
   getPeople, getDepartments, getQuarterlyRocks, createRock,
   getPlanningCycles, getScorecardMetrics, createScorecardMetric,
-  getEosIssues, createEosIssue, getSpeakerAliases, createSpeakerAlias,
-  getMeetingRegister, createMeetingRegister, getAgentConfig, getFullContext,
+  getEosIssues, createEosIssue,
+  getSpeakerAliases, createSpeakerAlias, updateSpeakerAlias,
+  getMeetingRegister, createMeetingRegister,
+  getAgentConfig, updateAgentConfig, getFullContext,
 } from './notion.js';
 
 const router = express.Router();
@@ -18,7 +22,7 @@ router.get('/projects', async (req, res) => {
       name: p.properties.Name?.title?.[0]?.plain_text || 'Untitled',
       status: p.properties.Status?.status?.name || 'Unknown',
       description: (p.properties['Project Description']?.rich_text || []).map(t => t.plain_text).join('') || '',
-      keywords: (p.properties.Keywords?.rich_text || []).map(t => t.plain_text).join('').split(',').map(k => k.trim()).filter(k => k),
+      keywords: (p.properties['Key Words']?.rich_text || []).map(t => t.plain_text).join('').split(',').map(k => k.trim()).filter(k => k),
       client: (p.properties.Client?.rich_text || []).map(t => t.plain_text).join('') || '',
       projectLeadIds: (p.properties['Project Lead']?.relation || []).map(r => r.id),
     }));
@@ -36,6 +40,17 @@ router.post('/projects', async (req, res) => {
     res.json({ id: result.id, success: true });
   } catch (error) {
     console.error('Error creating project:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update project description, keywords, client
+router.patch('/projects/:id', async (req, res) => {
+  try {
+    await updateProject(req.params.id, req.body);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error updating project:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -75,6 +90,28 @@ router.get('/people', async (req, res) => {
     res.json(await getPeople(activeOnly));
   } catch (error) {
     console.error('Error fetching people:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create a person (external contacts, partners)
+router.post('/people', async (req, res) => {
+  try {
+    const result = await createPerson(req.body);
+    res.json({ id: result.id, success: true });
+  } catch (error) {
+    console.error('Error creating person:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update person job description / position level
+router.patch('/people/:id', async (req, res) => {
+  try {
+    await updatePerson(req.params.id, req.body);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error updating person:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -162,6 +199,16 @@ router.post('/speaker-aliases', async (req, res) => {
   }
 });
 
+router.patch('/speaker-aliases/:id', async (req, res) => {
+  try {
+    await updateSpeakerAlias(req.params.id, req.body);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error updating speaker alias:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ─── Meeting Register ───────────────────────────────────────────────
 router.get('/meeting-register', async (req, res) => {
   try { res.json(await getMeetingRegister()); }
@@ -182,6 +229,16 @@ router.post('/meeting-register', async (req, res) => {
 router.get('/agent-config', async (req, res) => {
   try { res.json(await getAgentConfig()); }
   catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+router.patch('/agent-config/:id', async (req, res) => {
+  try {
+    await updateAgentConfig(req.params.id, req.body);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error updating agent config:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ─── Aggregated Context (single call for agent) ─────────────────────
@@ -524,8 +581,13 @@ router.post('/notes', async (req, res) => {
       properties['Duration (Seconds)'] = { number: duration_seconds };
     }
 
-    if (project_id) {
-      properties['Project'] = { relation: [{ id: project_id }] };
+    // Support both single project_id and multi-project project_ids array
+    const allProjectIds = [
+      ...(req.body.project_ids || []),
+      ...(project_id && !req.body.project_ids ? [project_id] : [])
+    ].filter(Boolean);
+    if (allProjectIds.length) {
+      properties['Project'] = { relation: allProjectIds.map(id => ({ id })) };
     }
 
     if (people_ids?.length) {

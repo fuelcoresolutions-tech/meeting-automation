@@ -29,7 +29,7 @@ that capture the full substance, reasoning, and nuance of every discussion.
 6. **Reference KNOWN ROCKS by their exact title** when the transcript discusses matching topics.
 7. **Read and follow AGENT CONFIG custom instructions** — they contain workspace-specific rules.
 8. **When linking tasks to projects, use the project_id from KNOWN PROJECTS, not a string name.**
-9. **Cross-project detection is MANDATORY.** Before creating any meeting note, compare transcript topics against every project's Keywords and Description in KNOWN PROJECTS. If 2+ transcript topics match a project's keywords, that project is RELEVANT — create a separate meeting note for it (same content, different project_id). Never assign everything to one project if multiple are relevant.
+9. **Cross-project detection is MANDATORY.** Before creating any meeting note, compare transcript topics against every project's Keywords and Description in PROJECT DESCRIPTIONS. If a meeting covers topics from multiple projects, pass ALL relevant project IDs in the `project_ids` array (not just `project_id`) when calling create_meeting_note — this links ONE note to multiple projects. Never create duplicate notes for the same content. Route each task to the most specific matching project using that task's `project_id`.
 
 ## MANDATORY EXECUTION ORDER — FOLLOW THIS SEQUENCE
 
@@ -139,18 +139,19 @@ Format: "This task is done when [specific observable outcomes]"
 
 Before creating notes or tasks, perform cross-project analysis:
 
-1. **Read every project's Keywords and Description** from KNOWN PROJECTS
-2. **Identify 5–15 major topics** discussed in the transcript (e.g., "cash flow review", "IT ticketing system", "Stabex client delivery")
-3. **Match each topic against project keywords** — a topic matching any keyword counts as a hit
-4. **Any project with 2+ topic hits is a RELEVANT project** for this meeting
-5. **Create one meeting note per relevant project** (same content, different `project_id`)
-6. **Route tasks to the most specific matching project** — not always the default
+1. **Read every project's full Description and Keywords** from PROJECT DESCRIPTIONS
+2. **Identify 5–15 major topics** discussed in the transcript (e.g., "cash flow review", "bread marketing", "Stabex client delivery", "Lexor Foundation campaign")
+3. **Match each topic against project keywords and description** — a topic matching any keyword counts as a hit
+4. **Any project with 2+ topic hits is RELEVANT** for this meeting
+5. **Create ONE meeting note** with `project_ids` set to ALL relevant project IDs (e.g., `["fuel-core-id", "lexor-foundation-id"]`)
+6. **Route each task to the most specific matching project** using that task's `project_id`
 
 Rules:
-- If only one project matches → single meeting note, proceed normally
-- If zero projects match → use the first/default project from KNOWN PROJECTS and note the uncertainty in confidenceNotes
+- If only one project matches → pass that ID in `project_ids` (single-element array), proceed normally
+- If multiple projects match → pass all IDs in `project_ids` — do NOT create duplicate notes
+- If zero projects match → use the default project from KNOWN PROJECTS and note uncertainty in confidenceNotes
 - **NEVER create new projects** — the create_project tool has been removed
-- Tasks should link to the most topically relevant project, not always the catch-all default
+- **NEVER create duplicate meeting notes** for the same meeting content — one note, multiple project links
 
 ### 5. Rocks and To-Dos (EOS Terminology)
 - **Rocks**: 90-day priorities, quarterly goals — create as HIGH priority tasks
