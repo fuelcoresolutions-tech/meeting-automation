@@ -329,7 +329,9 @@ function buildToggle(title, childBlocks) {
 
 // ─── Meeting Note Section Builders ──────────────────────────────────
 
-function buildCompanyHeader(meetingType) {
+function buildCompanyHeader(meetingType, orgName, subtitle) {
+  const resolvedOrgName = orgName || 'FUEL CORE SOLUTIONS';
+  const resolvedSubtitle = subtitle !== undefined ? subtitle : 'EOS / Traction Framework';
   const typeLabels = {
     'L10': 'Level 10 Meeting Notes',
     'Quarterly': 'Quarterly Meeting Notes',
@@ -340,16 +342,17 @@ function buildCompanyHeader(meetingType) {
     'Other': 'Meeting Notes',
     'General': 'Meeting Notes'
   };
-  return [
-    buildHeading(1, 'FUEL CORE SOLUTIONS'),
+  const blocks = [
+    buildHeading(1, resolvedOrgName),
     buildParagraph([
       { text: typeLabels[meetingType] || 'Meeting Notes', bold: false }
-    ]),
-    buildParagraph([
-      { text: 'EOS / Traction Framework', bold: false }
-    ]),
-    buildDivider()
+    ])
   ];
+  if (resolvedSubtitle) {
+    blocks.push(buildParagraph([{ text: resolvedSubtitle, bold: false }]));
+  }
+  blocks.push(buildDivider());
+  return blocks;
 }
 
 function buildMeetingInfoSection(info, date, durationSeconds) {
@@ -508,7 +511,7 @@ router.post('/notes', async (req, res) => {
       headlines, ids_issues, conclude_todos, cascading_messages,
       next_meeting, meeting_rating,
       overview, action_items, key_points,
-      people_ids, department_ids
+      people_ids, department_ids, organization_name
     } = req.body;
 
     const children = [];
@@ -520,7 +523,7 @@ router.post('/notes', async (req, res) => {
     );
 
     // ALWAYS use structured format — company header first
-    children.push(...buildCompanyHeader(meeting_type));
+    children.push(...buildCompanyHeader(meeting_type, organization_name));
 
     if (hasStructuredSections) {
       // Structured format — rich tables, toggles, dividers
@@ -611,7 +614,9 @@ router.post('/notes', async (req, res) => {
 
 // ─── Meeting Agenda Section Builders ─────────────────────────────
 
-function buildAgendaCompanyHeader(meetingType) {
+function buildAgendaCompanyHeader(meetingType, orgName, subtitle) {
+  const resolvedOrgName = orgName || 'FUEL CORE SOLUTIONS';
+  const resolvedSubtitle = subtitle !== undefined ? subtitle : 'EOS / Traction Framework';
   const typeLabels = {
     'L10': 'Level 10 Meeting Agenda',
     'Quarterly': 'Quarterly Meeting Agenda',
@@ -622,16 +627,17 @@ function buildAgendaCompanyHeader(meetingType) {
     'Other': 'Meeting Agenda',
     'General': 'Meeting Agenda'
   };
-  return [
-    buildHeading(1, 'FUEL CORE SOLUTIONS'),
+  const blocks = [
+    buildHeading(1, resolvedOrgName),
     buildParagraph([
       { text: typeLabels[meetingType] || 'Meeting Agenda', bold: false }
-    ]),
-    buildParagraph([
-      { text: 'EOS / Traction Framework', bold: false }
-    ]),
-    buildDivider()
+    ])
   ];
+  if (resolvedSubtitle) {
+    blocks.push(buildParagraph([{ text: resolvedSubtitle, bold: false }]));
+  }
+  blocks.push(buildDivider());
+  return blocks;
 }
 
 function buildAgendaInfoSection(meetingDate, durationMinutes, location, facilitator, attendees) {
@@ -646,46 +652,84 @@ function buildAgendaInfoSection(meetingDate, durationMinutes, location, facilita
   return blocks;
 }
 
-function buildAgendaL10Segments() {
-  const blocks = [buildDivider(), buildHeading(2, 'L10 MEETING SEGMENTS')];
-  const segments = [
-    ['Segue', '5 min', 'Share personal and professional good news'],
-    ['Scorecard Review', '5 min', 'Review weekly metrics — on/off track'],
-    ['Rock Review', '5 min', 'Review quarterly priorities — on/off track'],
-    ['Customer/Employee Headlines', '5 min', 'Notable news and updates'],
-    ['To-Do Review', '5 min', "Review last week's to-dos — done/not done"],
-    ['IDS (Identify, Discuss, Solve)', '60 min', 'Work through issues list'],
-    ['Conclude', '5 min', 'Recap to-dos, cascading messages, rate 1-10']
+function buildAgendaL10Segments(rocks, issues, agendaItems) {
+  const blocks = [];
+
+  // L10 intro description
+  blocks.push(buildDivider());
+  blocks.push(buildParagraph([{
+    text: 'The EOS (Entrepreneurial Operating System) Level 10 Meeting™ is a 90-minute weekly structured agenda designed to foster accountability, tackle issues, and ensure team alignment. Run at the same day and time every week without exception.',
+    bold: false
+  }]));
+
+  // 1. Segue
+  blocks.push(buildDivider());
+  blocks.push(buildHeading(2, '1. SEGUE — 5 minutes'));
+  blocks.push(buildParagraph([{ text: 'Each person shares one personal and one professional best to get everyone focused and connected. No business talk — this segment is for human connection only.', bold: false }]));
+
+  // 2. Scorecard Review
+  blocks.push(buildDivider());
+  blocks.push(buildHeading(2, '2. SCORECARD REVIEW — 5 minutes'));
+  blocks.push(buildParagraph([{ text: 'Review 5–15 high-level weekly measurables. Answer on track or off track only. Any metric that is off track goes directly to the Issues List — no discussion here.', bold: false }]));
+
+  // 3. Rock Review
+  blocks.push(buildDivider());
+  blocks.push(buildHeading(2, '3. ROCK REVIEW — 5 minutes'));
+  blocks.push(buildParagraph([{ text: 'Update on 90-day quarterly priorities (Rocks). Report on track or off track only. If a Rock is off track, add it to the Issues List for IDS discussion.', bold: false }]));
+  if (rocks?.length > 0) {
+    const rows = rocks.map((r, i) => [String(i + 1), r, '☐ On Track  /  ☐ Off Track']);
+    blocks.push(buildTable(['#', 'Rock / 90-Day Priority', 'Status'], rows));
+  }
+
+  // 4. Customer / Employee Headlines
+  blocks.push(buildDivider());
+  blocks.push(buildHeading(2, '4. CUSTOMER / EMPLOYEE HEADLINES — 5 minutes'));
+  blocks.push(buildParagraph([{ text: 'Share notable customer or employee news in one sentence. Good and bad news both welcome. Any headline needing discussion goes to the Issues List.', bold: false }]));
+
+  // 5. To-Do List Review
+  blocks.push(buildDivider());
+  blocks.push(buildHeading(2, '5. TO-DO LIST REVIEW — 5 minutes'));
+  blocks.push(buildParagraph([{ text: "Review previous week's to-dos. Report done or not done only — no explanations. Target: 90%+ completion rate. Incomplete items go to Issues List.", bold: false }]));
+  if (agendaItems?.length > 0) {
+    const rows = agendaItems.map((item, i) => [String(i + 1), item, '☐ Done  /  ☐ Not Done']);
+    blocks.push(buildTable(['#', 'To-Do / Carry-Over Item', 'Status'], rows));
+  }
+
+  // 6. IDS — Identify, Discuss, Solve
+  blocks.push(buildDivider());
+  blocks.push(buildHeading(2, '6. IDS — IDENTIFY, DISCUSS, SOLVE — 60 minutes'));
+  blocks.push(buildParagraph([{ text: 'The core of the meeting. Prioritise the top issues from the Issues List by vote, then work through each using IDS: identify the real root cause, discuss all angles, and agree on a permanent solution. Use EOS language: Change it, End it, or Live with it.', bold: false }]));
+  if (issues?.length > 0) {
+    const rows = issues.map((issue, i) => [String(i + 1), issue, '']);
+    blocks.push(buildTable(['#', 'Issue for Discussion', 'Solution / Owner'], rows));
+  }
+
+  // 7. Conclude
+  blocks.push(buildDivider());
+  blocks.push(buildHeading(2, '7. CONCLUDE — 5 minutes'));
+  blocks.push(buildParagraph([{ text: 'Recap all new to-dos created in this meeting (owner + deadline). Determine cascading messages — what must be communicated to the rest of the organisation. Rate the meeting 1–10 (target: 8+). End exactly on time.', bold: false }]));
+
+  // Key Principles
+  blocks.push(buildDivider());
+  blocks.push(buildHeading(2, 'KEY PRINCIPLES FOR SUCCESS'));
+  const principles = [
+    ['Same Time / Day', 'Run at the same time every week to create a consistent rhythm'],
+    ['No Reporting / Updates', 'First 30 minutes are for exceptions only — no detailed updates'],
+    ['90-Minute Limit', 'Strict timekeeping ensures efficiency — no extensions'],
+    ['Binary Responses', 'During reporting: on track / off track, done / not done only'],
+    ['Drop to Issues', 'Anything needing discussion goes to the Issues List — no side conversations'],
+    ['Rating', 'Participants rate the meeting 1–10 to ensure it stays effective over time']
   ];
-  blocks.push(buildTable(['Segment', 'Time', 'Description'], segments));
+  blocks.push(buildTable(['Principle', 'Why It Matters'], principles));
+
   return blocks;
 }
 
-function buildAgendaRocksSection(rocks) {
-  const blocks = [buildDivider(), buildHeading(2, 'ROCKS TO REVIEW — 90-Day Priorities')];
-  const rows = rocks.map((r, i) => [String(i + 1), r, 'On Track / Off Track']);
-  blocks.push(buildTable(['#', 'Rock', 'Status'], rows));
-  return blocks;
-}
-
-function buildAgendaIssuesSection(issues) {
-  const blocks = [buildDivider(), buildHeading(2, 'ISSUES FOR IDS')];
-  const rows = issues.map((issue, i) => [String(i + 1), issue, 'To be discussed']);
-  blocks.push(buildTable(['#', 'Issue', 'Status'], rows));
-  return blocks;
-}
-
-function buildAgendaItemsSection(items) {
-  const blocks = [buildDivider(), buildHeading(2, 'AGENDA ITEMS')];
-  const rows = items.map((item, i) => [String(i + 1), item, '']);
-  blocks.push(buildTable(['#', 'Item', 'Notes'], rows));
-  return blocks;
-}
-
-function buildAgendaEndFooter() {
+function buildAgendaEndFooter(orgName) {
+  const label = orgName || 'Fuel Core Solutions';
   return [
     buildDivider(),
-    buildParagraph([{ text: 'End of Meeting Agenda — Fuel Core Solutions', bold: true }])
+    buildParagraph([{ text: `End of Meeting Agenda — ${label}`, bold: true }])
   ];
 }
 
@@ -703,39 +747,42 @@ router.post('/agendas', async (req, res) => {
       rocks_to_review,
       known_issues,
       agenda_items,
-      project_id
+      project_id,
+      organization_name
     } = req.body;
 
     const children = [];
 
     // Company branding header
-    children.push(...buildAgendaCompanyHeader(meeting_type));
+    children.push(...buildAgendaCompanyHeader(meeting_type, organization_name));
 
     // Meeting information table
     children.push(...buildAgendaInfoSection(meeting_date, duration_minutes, location, facilitator, attendees));
 
-    // L10 segments table (if L10 meeting)
+    // L10 — full structured format with rocks, issues, and to-dos embedded per section
     if (meeting_type === 'L10') {
-      children.push(...buildAgendaL10Segments());
-    }
-
-    // Rocks to review
-    if (rocks_to_review?.length > 0) {
-      children.push(...buildAgendaRocksSection(rocks_to_review));
-    }
-
-    // Known issues for IDS
-    if (known_issues?.length > 0) {
-      children.push(...buildAgendaIssuesSection(known_issues));
-    }
-
-    // Custom agenda items
-    if (agenda_items?.length > 0) {
-      children.push(...buildAgendaItemsSection(agenda_items));
+      children.push(...buildAgendaL10Segments(rocks_to_review, known_issues, agenda_items));
+    } else {
+      // Non-L10: generic sections for rocks, issues, items
+      if (rocks_to_review?.length > 0) {
+        children.push(buildDivider(), buildHeading(2, 'ROCKS TO REVIEW — 90-Day Priorities'));
+        const rows = rocks_to_review.map((r, i) => [String(i + 1), r, 'On Track / Off Track']);
+        children.push(buildTable(['#', 'Rock', 'Status'], rows));
+      }
+      if (known_issues?.length > 0) {
+        children.push(buildDivider(), buildHeading(2, 'ISSUES FOR IDS'));
+        const rows = known_issues.map((issue, i) => [String(i + 1), issue, 'To be discussed']);
+        children.push(buildTable(['#', 'Issue', 'Solution / Owner'], rows));
+      }
+      if (agenda_items?.length > 0) {
+        children.push(buildDivider(), buildHeading(2, 'AGENDA ITEMS'));
+        const rows = agenda_items.map((item, i) => [String(i + 1), item, '']);
+        children.push(buildTable(['#', 'Item', 'Notes'], rows));
+      }
     }
 
     // End footer
-    children.push(...buildAgendaEndFooter());
+    children.push(...buildAgendaEndFooter(organization_name));
 
     console.log(`Building meeting agenda with ${children.length} top-level blocks`);
 

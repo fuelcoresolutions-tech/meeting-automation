@@ -58,6 +58,15 @@ def _resolve_dept(dept_id: str, departments: list) -> str:
     return "Unknown"
 
 
+def _resolve_person_project(person: dict, departments: list) -> str:
+    """Derive a person's project/org from their department's Project field."""
+    for did in person.get("departmentIds", []):
+        dept = next((d for d in departments if d.get("id") == did), None)
+        if dept and dept.get("project"):
+            return dept["project"]
+    return "—"
+
+
 def format_context_for_prompt(ctx: dict, meeting_format: str = None) -> str:
     """Format Notion context as a KNOWN DATA section for the system prompt."""
     people = ctx.get("people", [])
@@ -97,15 +106,16 @@ def format_context_for_prompt(ctx: dict, meeting_format: str = None) -> str:
     # ── People ──
     lines.append("### KNOWN PEOPLE")
     lines.append("Match transcript speakers to these names. If someone is NOT here, add to new_people.")
-    lines.append("| Name | ID | Role | Department | Relationship |")
-    lines.append("|------|-----|------|------------|--------------|")
+    lines.append("| Name | ID | Role | Department | Relationship | Project |")
+    lines.append("|------|-----|------|------------|--------------|---------|")
     for p in people:
         name = p['name'].strip()  # normalize trailing spaces
         dept_names = [_resolve_dept(did, departments) for did in p.get("departmentIds", [])]
         dept_str = ", ".join(dept_names) if dept_names else "—"
         role = p.get("role") or p.get("title") or "—"
         rel = ", ".join(p.get("relationship", [])) or "External"
-        lines.append(f"| {name} | {p['id']} | {role} | {dept_str} | {rel} |")
+        proj = _resolve_person_project(p, departments)
+        lines.append(f"| {name} | {p['id']} | {role} | {dept_str} | {rel} | {proj} |")
     lines.append("")
 
     # ── Speaker Inference Guide ──
@@ -168,10 +178,12 @@ def format_context_for_prompt(ctx: dict, meeting_format: str = None) -> str:
 
     # ── Departments ──
     lines.append("### KNOWN DEPARTMENTS")
-    lines.append("| Department | ID | Code | Level |")
-    lines.append("|------------|-----|------|-------|")
+    lines.append("The 'Project' column shows which organization/project owns this department. Use it to match task/issue department_ids to the correct project.")
+    lines.append("| Department | ID | Code | Level | Project |")
+    lines.append("|------------|-----|------|-------|---------|")
     for d in departments:
-        lines.append(f"| {d['name']} | {d['id']} | {d.get('code', '—')} | {d.get('level', '—')} |")
+        proj = d.get('project') or '—'
+        lines.append(f"| {d['name']} | {d['id']} | {d.get('code', '—')} | {d.get('level', '—')} | {proj} |")
     lines.append("")
 
     # ── Planning Cycles ──

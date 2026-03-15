@@ -208,7 +208,8 @@ TOOLS = [
                 "key_points": {"type": "array", "items": {"type": "string"}, "description": "Key discussion points (for General/non-EOS meetings)"},
                 "people_ids": {"type": "array", "items": {"type": "string"}, "description": "People IDs from KNOWN PEOPLE — ALL attendees of the meeting. ALWAYS populate this."},
                 "department_ids": {"type": "array", "items": {"type": "string"}, "description": "Department IDs from KNOWN DEPARTMENTS relevant to this meeting"},
-                "project_ids": {"type": "array", "items": {"type": "string"}, "description": "Additional project IDs if this meeting spans multiple projects. When cross-project topics are detected (transcript topics match keywords of multiple projects), call create_meeting_note once per relevant project with the same content but different project_id values."}
+                "project_ids": {"type": "array", "items": {"type": "string"}, "description": "Additional project IDs if this meeting spans multiple projects. When cross-project topics are detected (transcript topics match keywords of multiple projects), call create_meeting_note once per relevant project with the same content but different project_id values."},
+                "organization_name": {"type": "string", "description": "Company/organization name for the meeting header. Determine from the project this meeting belongs to. E.g. 'FUEL CORE SOLUTIONS' for internal Fuel Core meetings, 'LEXOR FOUNDATION' for Lexor Foundation meetings. ALWAYS pass this — never omit it."}
             },
             "required": ["title", "date", "meeting_type", "people_ids"]
         }
@@ -323,7 +324,8 @@ TOOLS = [
                 "rocks_to_review": {"type": "array", "items": {"type": "string"}, "description": "Quarterly rocks/priorities to review"},
                 "known_issues": {"type": "array", "items": {"type": "string"}, "description": "Known issues for IDS discussion"},
                 "agenda_items": {"type": "array", "items": {"type": "string"}, "description": "Custom agenda items if not standard L10"},
-                "project_id": {"type": "string", "description": "Project ID to link to"}
+                "project_id": {"type": "string", "description": "Project ID to link to"},
+                "organization_name": {"type": "string", "description": "Company/organization name for the agenda header. Use the same org name as the matching meeting note. E.g. 'FUEL CORE SOLUTIONS' for Fuel Core meetings, 'LEXOR FOUNDATION' for Lexor Foundation meetings. ALWAYS pass this."}
             },
             "required": ["title", "meeting_date", "meeting_type"]
         }
@@ -480,7 +482,8 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                         "rocks_to_review": tool_input.get("rocks_to_review", []),
                         "known_issues": tool_input.get("known_issues", []),
                         "agenda_items": tool_input.get("agenda_items", []),
-                        "project_id": tool_input.get("project_id")
+                        "project_id": tool_input.get("project_id"),
+                        "organization_name": tool_input.get("organization_name")
                     },
                     timeout=30.0
                 )

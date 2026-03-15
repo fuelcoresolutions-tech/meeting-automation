@@ -452,6 +452,7 @@ export async function getDepartments(activeOnly = true) {
     teamMemberIds: getRelationIds(d, 'Team Members'),
     description: getRichText(d, 'Description '),
     headCount: getRichText(d, 'Head Count'),
+    project: getSelect(d, 'Project'),
   }));
 }
 
