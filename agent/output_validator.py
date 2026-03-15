@@ -286,6 +286,12 @@ Check for:
 2. Incorrect people names or roles
 3. Rock titles that don't match KNOWN ROCKS
 4. Any factual inconsistencies
+5. Meeting notes linked to a project whose Keywords don't match any topic in the meeting content — flag if the project assignment appears incorrect given the project's description and keywords
+
+DO NOT modify:
+- Dates or due_dates (date scheduling is handled by the agent, not the validator)
+- IDs or UUIDs
+- Numeric values like duration, ratings
 
 Return ONLY valid JSON:
 {{

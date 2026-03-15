@@ -29,7 +29,7 @@ const DATABASES = {
  * @param {Date} projectData.dueDate - Project due date
  */
 export async function createProject(projectData) {
-  const { name, status, description, dueDate } = projectData;
+  const { name, status, description, dueDate, keywords, client } = projectData;
 
   const properties = {
     Name: {
@@ -56,6 +56,25 @@ export async function createProject(projectData) {
       date: {
         start: dueDate instanceof Date ? dueDate.toISOString().split('T')[0] : dueDate
       }
+    };
+  }
+
+  if (description) {
+    properties['Project Description'] = {
+      rich_text: [{ type: 'text', text: { content: description.slice(0, 2000) } }]
+    };
+  }
+
+  if (keywords) {
+    const keywordsStr = Array.isArray(keywords) ? keywords.join(', ') : keywords;
+    properties['Keywords'] = {
+      rich_text: [{ type: 'text', text: { content: keywordsStr.slice(0, 2000) } }]
+    };
+  }
+
+  if (client) {
+    properties['Client'] = {
+      rich_text: [{ type: 'text', text: { content: client.slice(0, 2000) } }]
     };
   }
 
@@ -319,6 +338,8 @@ export async function getPeople(activeOnly = true) {
     departmentIds: getRelationIds(p, 'Department'),
     reportsToIds: getRelationIds(p, 'Reports To'),
     relationship: getMultiSelect(p, 'Relationship'),
+    jobDescription: getRichText(p, 'Job Description'),
+    positionLevel: getSelect(p, 'Position Level'),
   }));
 }
 
@@ -546,6 +567,10 @@ export async function getFullContext() {
       name: p.properties?.Name?.title?.[0]?.plain_text || 'Untitled',
       status: p.properties?.Status?.status?.name || 'Unknown',
       departmentIds: (p.properties?.Departments?.relation || []).map(r => r.id),
+      description: (p.properties?.['Project Description']?.rich_text || []).map(t => t.plain_text).join('') || '',
+      keywords: (p.properties?.Keywords?.rich_text || []).map(t => t.plain_text).join('').split(',').map(k => k.trim()).filter(k => k),
+      client: (p.properties?.Client?.rich_text || []).map(t => t.plain_text).join('') || '',
+      projectLeadIds: (p.properties?.['Project Lead']?.relation || []).map(r => r.id),
     }))),
     getDepartments(),
     getQuarterlyRocks(),

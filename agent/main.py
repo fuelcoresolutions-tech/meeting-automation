@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
+import asyncio
 import logging
 import os
 import traceback
@@ -79,6 +80,18 @@ class ProcessingResult(BaseModel):
 # In-memory processing status (use Redis/DB in production)
 processing_status: Dict[str, Any] = {}
 
+# Queue of meetings waiting to be processed
+_processing_queue: asyncio.Queue = None
+# Semaphore: only 1 meeting processed at a time to avoid Claude rate limits
+_processing_semaphore: asyncio.Semaphore = None
+
+
+def _get_semaphore():
+    global _processing_semaphore
+    if _processing_semaphore is None:
+        _processing_semaphore = asyncio.Semaphore(1)
+    return _processing_semaphore
+
 
 @app.get("/")
 async def root():
@@ -117,25 +130,31 @@ async def process_transcript(transcript: TranscriptData, background_tasks: Backg
 
 
 async def process_transcript_background(transcript_data: dict):
-    """Background task to process transcript."""
+    """Background task to process transcript — queued so only 1 runs at a time."""
     meeting_id = transcript_data["id"]
+    sem = _get_semaphore()
 
-    try:
-        logger.info(f"Starting processing for meeting: {meeting_id} - {transcript_data.get('title')}")
-        result = await process_meeting_transcript(transcript_data)
+    queue_position = sem._value  # 0 = will wait, 1 = runs immediately
+    if queue_position == 0:
+        logger.info(f"Meeting {meeting_id} queued — another meeting is processing")
 
-        processing_status[meeting_id] = {
-            "status": "completed",
-            "result": result
-        }
-        logger.info(f"Completed processing for meeting: {meeting_id}")
+    async with sem:
+        try:
+            logger.info(f"Starting processing for meeting: {meeting_id} - {transcript_data.get('title')}")
+            result = await process_meeting_transcript(transcript_data)
 
-    except Exception as e:
-        logger.error(f"Error processing meeting {meeting_id}: {e}")
-        processing_status[meeting_id] = {
-            "status": "failed",
-            "error": str(e)
-        }
+            processing_status[meeting_id] = {
+                "status": "completed",
+                "result": result
+            }
+            logger.info(f"Completed processing for meeting: {meeting_id}")
+
+        except Exception as e:
+            logger.error(f"Error processing meeting {meeting_id}: {e}")
+            processing_status[meeting_id] = {
+                "status": "failed",
+                "error": str(e)
+            }
 
 
 @app.get("/status/{meeting_id}")

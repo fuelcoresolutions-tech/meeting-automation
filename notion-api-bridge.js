@@ -16,7 +16,11 @@ router.get('/projects', async (req, res) => {
     const formatted = projects.map(p => ({
       id: p.id,
       name: p.properties.Name?.title?.[0]?.plain_text || 'Untitled',
-      status: p.properties.Status?.status?.name || 'Unknown'
+      status: p.properties.Status?.status?.name || 'Unknown',
+      description: (p.properties['Project Description']?.rich_text || []).map(t => t.plain_text).join('') || '',
+      keywords: (p.properties.Keywords?.rich_text || []).map(t => t.plain_text).join('').split(',').map(k => k.trim()).filter(k => k),
+      client: (p.properties.Client?.rich_text || []).map(t => t.plain_text).join('') || '',
+      projectLeadIds: (p.properties['Project Lead']?.relation || []).map(r => r.id),
     }));
     res.json(formatted);
   } catch (error) {

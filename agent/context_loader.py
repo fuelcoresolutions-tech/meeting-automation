@@ -26,7 +26,8 @@ async def fetch_notion_context() -> dict:
         ctx = response.json()
     logger.info(
         f"Context loaded: {len(ctx.get('people', []))} people, "
-        f"{len(ctx.get('projects', []))} projects, "
+        f"{len(ctx.get('projects', []))} projects "
+        f"({sum(len(p.get('keywords', [])) for p in ctx.get('projects', []))} keywords), "
         f"{len(ctx.get('departments', []))} departments, "
         f"{len(ctx.get('rocks', []))} rocks, "
         f"{len(ctx.get('speakerAliases', []))} aliases"
@@ -52,7 +53,7 @@ def _resolve_dept(dept_id: str, departments: list) -> str:
     return "Unknown"
 
 
-def format_context_for_prompt(ctx: dict) -> str:
+def format_context_for_prompt(ctx: dict, meeting_format: str = None) -> str:
     """Format Notion context as a KNOWN DATA section for the system prompt."""
     people = ctx.get("people", [])
     projects = ctx.get("projects", [])
@@ -82,37 +83,68 @@ def format_context_for_prompt(ctx: dict) -> str:
             lines.append(custom)
         lines.append("")
 
+    # ── In-Person meeting warning ──
+    if meeting_format == "In-Person":
+        lines.append("⚠️ **IN-PERSON MEETING DETECTED** — No automatic speaker labels exist in this transcript.")
+        lines.append("Use the SPEAKER INFERENCE GUIDE below to identify speakers from content and role context.")
+        lines.append("")
+
     # ── People ──
     lines.append("### KNOWN PEOPLE")
     lines.append("Match transcript speakers to these names. If someone is NOT here, add to new_people.")
-    lines.append("| Name | ID | Role | Department |")
-    lines.append("|------|-----|------|------------|")
+    lines.append("| Name | ID | Role | Department | Job Description | Level |")
+    lines.append("|------|-----|------|------------|-----------------|-------|")
     for p in people:
         dept_names = [_resolve_dept(did, departments) for did in p.get("departmentIds", [])]
         dept_str = ", ".join(dept_names) if dept_names else "—"
         role = p.get("role") or p.get("title") or "—"
-        lines.append(f"| {p['name']} | {p['id']} | {role} | {dept_str} |")
+        job_desc = p.get("jobDescription", "") or ""
+        job_desc_short = (job_desc[:80] + "...") if len(job_desc) > 80 else job_desc or "—"
+        level = p.get("positionLevel", "") or "—"
+        lines.append(f"| {p['name']} | {p['id']} | {role} | {dept_str} | {job_desc_short} | {level} |")
     lines.append("")
+
+    # ── Speaker Inference Guide ──
+    people_with_jobs = [p for p in people if p.get("jobDescription")]
+    if people_with_jobs:
+        lines.append("### SPEAKER INFERENCE GUIDE (For In-Person / Unlabelled Meetings)")
+        lines.append("Match speech content and topics to the job descriptions below to identify speakers.")
+        lines.append("Use confidence scores: High (0.85+) = name mentioned + topic match; Medium (0.65–0.84) = topic match only; Low (<0.65) = use 'Unknown Speaker N'.")
+        lines.append("")
+        for p in people_with_jobs:
+            role = p.get("role") or p.get("title") or "Unknown Role"
+            level = p.get("positionLevel", "") or ""
+            label = f"{role}, {level}" if level else role
+            lines.append(f"**{p['name']}** ({label}):")
+            lines.append(f"  {p['jobDescription']}")
+            lines.append("")
 
     # ── Speaker Aliases ──
     lines.append("### KNOWN SPEAKER ALIASES")
-    lines.append("| Alias | Person | Confidence |")
-    lines.append("|-------|--------|------------|")
+    lines.append("| Alias | Person | Confidence | Notes |")
+    lines.append("|-------|--------|------------|-------|")
     for a in aliases:
         person_names = [_resolve_name(pid, people) for pid in a.get("personIds", [])]
         person_str = ", ".join(person_names) if person_names else "Unknown"
-        lines.append(f"| {a['alias']} | {person_str} | {a.get('confidence', '?')} |")
+        notes = a.get("notes", "") or "—"
+        notes_short = (notes[:60] + "...") if len(notes) > 60 else notes
+        lines.append(f"| {a['alias']} | {person_str} | {a.get('confidence', '?')} | {notes_short} |")
     lines.append("")
 
     # ── Projects ──
     lines.append("### KNOWN PROJECTS")
     lines.append("ALL tasks and notes MUST link to one of these projects by ID. NEVER invent project names.")
-    lines.append("| Project Name | ID | Status |")
-    lines.append("|--------------|-----|--------|")
+    lines.append("Use Keywords and Description to match transcript topics to the correct project(s).")
+    lines.append("| Project Name | ID | Status | Client | Keywords | Description |")
+    lines.append("|--------------|-----|--------|--------|----------|-------------|")
     for p in projects:
-        lines.append(f"| {p['name']} | {p['id']} | {p.get('status', '?')} |")
+        keywords_str = ", ".join(p.get("keywords", [])) if p.get("keywords") else "—"
+        client = p.get("client", "") or "—"
+        description = p.get("description", "") or ""
+        desc_short = (description[:100] + "...") if len(description) > 100 else description or "—"
+        lines.append(f"| {p['name']} | {p['id']} | {p.get('status', '?')} | {client} | {keywords_str} | {desc_short} |")
     if not projects:
-        lines.append("| (no projects found) | — | — |")
+        lines.append("| (no projects found) | — | — | — | — | — |")
     lines.append("")
 
     # ── Departments ──
@@ -263,12 +295,16 @@ def format_context_for_prompt(ctx: dict) -> str:
     return "\n".join(lines)
 
 
-async def load_context_for_prompt() -> tuple[dict, str]:
+async def load_context_for_prompt(meeting_format: str = None) -> tuple[dict, str]:
     """Main entry point: fetch context and format for prompt injection.
-    
+
+    Args:
+        meeting_format: Optional meeting format string (e.g. "In-Person", "Virtual", "Hybrid").
+                        Triggers speaker inference warning when "In-Person".
+
     Returns:
         (raw_context_dict, formatted_prompt_section)
     """
     ctx = await fetch_notion_context()
-    formatted = format_context_for_prompt(ctx)
+    formatted = format_context_for_prompt(ctx, meeting_format=meeting_format)
     return ctx, formatted

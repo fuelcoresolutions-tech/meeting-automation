@@ -26,7 +26,7 @@ LONG_MEETING_THRESHOLD = int(os.getenv("LONG_MEETING_THRESHOLD_TOKENS", "10000")
 TOOLS = [
     {
         "name": "get_projects",
-        "description": "Retrieve all existing projects from Notion. Use this first to find relevant projects for linking tasks and notes.",
+        "description": "Retrieve all existing projects from Notion including descriptions, keywords, and client info. Use this first to find relevant projects for linking tasks and notes. Use keywords and descriptions to detect cross-project topics — create separate meeting notes per relevant project when 2+ transcript topics match a project's keywords.",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -206,7 +206,8 @@ TOOLS = [
                 "action_items": {"type": "array", "items": {"type": "string"}, "description": "Action items list (for General/non-EOS meetings)"},
                 "key_points": {"type": "array", "items": {"type": "string"}, "description": "Key discussion points (for General/non-EOS meetings)"},
                 "people_ids": {"type": "array", "items": {"type": "string"}, "description": "People IDs from KNOWN PEOPLE — ALL attendees of the meeting. ALWAYS populate this."},
-                "department_ids": {"type": "array", "items": {"type": "string"}, "description": "Department IDs from KNOWN DEPARTMENTS relevant to this meeting"}
+                "department_ids": {"type": "array", "items": {"type": "string"}, "description": "Department IDs from KNOWN DEPARTMENTS relevant to this meeting"},
+                "project_ids": {"type": "array", "items": {"type": "string"}, "description": "Additional project IDs if this meeting spans multiple projects. When cross-project topics are detected (transcript topics match keywords of multiple projects), call create_meeting_note once per relevant project with the same content but different project_id values."}
             },
             "required": ["title", "date", "meeting_type", "people_ids"]
         }
@@ -368,9 +369,17 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                 if not projects:
                     result_str = "No projects found in the database."
                 else:
+                    def _fmt_project(p):
+                        keywords = ", ".join(p.get("keywords", [])) or "—"
+                        client = p.get("client", "") or "—"
+                        desc = (p.get("description", "") or "")[:120]
+                        desc_str = (desc + "...") if len(p.get("description", "") or "") > 120 else desc or "—"
+                        return (
+                            f"- {p['name']} (ID: {p['id']}, Status: {p.get('status', 'Unknown')}, "
+                            f"Client: {client}, Keywords: [{keywords}], Description: {desc_str})"
+                        )
                     result_str = f"Found {len(projects)} projects:\n" + "\n".join(
-                        f"- {p['name']} (ID: {p['id']}, Status: {p.get('status', 'Unknown')})"
-                        for p in projects
+                        _fmt_project(p) for p in projects
                     )
 
                 # Cache for this session
@@ -623,10 +632,15 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
     selected_model = SONNET_MODEL
     logger.info(f"Meeting complexity: {complexity} — using Sonnet ({SONNET_MODEL})")
 
+    # Extract meeting format for in-person speaker inference
+    meeting_format = transcript_data.get('meeting_format') or transcript_data.get('meetingFormat')
+    if meeting_format:
+        logger.info(f"Meeting format: {meeting_format}")
+
     # ── Load fresh Notion context ──
     logger.info("Loading fresh Notion context for prompt injection...")
     try:
-        raw_context, context_section = await load_context_for_prompt()
+        raw_context, context_section = await load_context_for_prompt(meeting_format=meeting_format)
         # Find default project ID from context
         projects_list = raw_context.get("projects", [])
         default_project_id = projects_list[0]["id"] if projects_list else None
@@ -669,6 +683,7 @@ Do NOT call get_projects() — the project list is already provided above."""
 - **Title**: {transcript_data.get('title', 'Untitled Meeting')}
 - **Date**: {formatted_date}
 - **Duration**: {duration_mins} minutes ({duration_seconds} seconds)
+- **Meeting Format**: {meeting_format or 'Unknown (assume Virtual if Fireflies speaker labels are present)'}
 - **Organizer**: {transcript_data.get('organizer_email', 'Unknown')}
 - **Participants**: {', '.join(transcript_data.get('participants', []))}
 - **Transcript URL**: {transcript_data.get('transcript_url', 'N/A')}
