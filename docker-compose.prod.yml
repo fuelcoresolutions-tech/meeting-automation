@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  webhook-server:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - ENABLE_IMMEDIATE_PROCESSING=false
+      - ENABLE_DURABLE_RETRY_WORKER=true
+      - RETRY_BACKOFF_SECONDS=60,300,900,3600,21600,43200,86400
+      - STALE_REQUEUE_HOURS=12
+      - NOTION_API_BASE=http://127.0.0.1:3000
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  agent:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - NODE_ENV=production
+      - NOTION_API_BASE=http://webhook-server:3000
+      - CLAUDE_AGENT_URL=http://agent:8000
+      - ENABLE_DURABLE_RETRY_WORKER=true
+      - RETRY_POLL_SECONDS=20
+      - MAX_RETRY_ATTEMPTS=100
+      - RATE_LIMIT_COOLDOWN_HOURS=24
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    depends_on:
+      webhook-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Add monitoring with health checks
+  monitor:
+    image: alpine:latest
+    command: |
+      sh -c "
+      while true; do
+        echo 'Checking services health...'
+        curl -f http://webhook-server:3000/health || echo 'Webhook server down'
+        curl -f http://agent:8000/health || echo 'Agent down'
+        sleep 60
+      done
+      "
+    depends_on:
+      - webhook-server
+      - agent
+    restart: unless-stopped
