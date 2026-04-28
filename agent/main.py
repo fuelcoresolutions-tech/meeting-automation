@@ -144,6 +144,7 @@ NOTION_API_BASE = os.getenv("NOTION_API_BASE", "http://127.0.0.1:8080")
 FIREFLY_API_KEY = os.getenv("FIREFLY_API_KEY", "")
 ENABLE_DURABLE_RETRY_WORKER = os.getenv("ENABLE_DURABLE_RETRY_WORKER", "true").lower() == "true"
 RETRY_POLL_SECONDS = int(os.getenv("RETRY_POLL_SECONDS", "20"))
+RATE_LIMIT_COOLDOWN_MINUTES = int(os.getenv("RATE_LIMIT_COOLDOWN_MINUTES", "15"))
 # Stronger long-outage retry policy:
 # retries quickly at first, then keeps trying forever at wider intervals.
 RETRY_BACKOFF_SECONDS = [
@@ -247,7 +248,11 @@ def _classify_processing_error(error_text: str) -> Dict[str, Any]:
     ]
     # Add specific rate limit detection
     if "too many requests" in text or "retry after" in text:
-        return {"retryable": True, "code": "RATE_LIMITED", "cooldown_hours": 24}
+        return {
+            "retryable": True,
+            "code": "RATE_LIMITED",
+            "cooldown_minutes": RATE_LIMIT_COOLDOWN_MINUTES,
+        }
     if any(marker in text for marker in retryable_markers):
         return {"retryable": True, "code": "RETRYABLE_UPSTREAM_LIMIT"}
     if any(marker in text for marker in terminal_markers):
@@ -321,7 +326,11 @@ async def _fetch_fireflies_transcript(external_meeting_id: str) -> Dict[str, Any
         resp.raise_for_status()
         data = resp.json()
     if data.get("errors"):
-        raise RuntimeError(data["errors"][0].get("message", "Fireflies query failed"))
+        error_message = data["errors"][0].get("message", "Fireflies query failed")
+        logger.warning(
+            f"Fireflies transcript fetch returned GraphQL errors for {external_meeting_id}: {data['errors']}"
+        )
+        raise RuntimeError(error_message)
     transcript = (data.get("data") or {}).get("transcript")
     if not transcript:
         raise RuntimeError("Transcript not found")
@@ -440,12 +449,18 @@ async def _process_retry_row(row: Dict[str, Any]) -> None:
         
         # Handle rate limits with extended cooldown
         if classification.get("code") == "RATE_LIMITED":
-            cooldown_hours = classification.get("cooldown_hours", 24)
-            next_retry_dt = datetime.now(timezone.utc) + timedelta(hours=cooldown_hours)
+            cooldown_minutes = classification.get("cooldown_minutes", RATE_LIMIT_COOLDOWN_MINUTES)
+            next_retry_dt = datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
             next_retry = next_retry_dt.isoformat()
-            logger.warning(f"Rate limit detected for meeting {row_id}, cooling down for {cooldown_hours} hours")
+            logger.warning(
+                f"Rate limit detected for meeting {row_id}, cooling down for "
+                f"{cooldown_minutes} minute(s). Error: {error_text}"
+            )
         else:
             next_retry = _compute_next_retry_iso(retry_count + 1) if classification["retryable"] else None
+            logger.warning(
+                f"Meeting {row_id} processing failed with {classification['code']}: {error_text}"
+            )
             
         await _patch_meeting_register(row_id, {
             "processingStatus": "Pending" if classification["retryable"] else "Failed",
