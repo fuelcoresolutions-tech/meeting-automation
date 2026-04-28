@@ -12,6 +12,18 @@ const PORT = process.env.PORT || 3000;
 const CLAUDE_AGENT_URL = process.env.CLAUDE_AGENT_URL || 'http://localhost:8000';
 const ENABLE_IMMEDIATE_PROCESSING = process.env.ENABLE_IMMEDIATE_PROCESSING === 'true';
 
+async function cacheTranscriptSnapshot(meetingRegisterId, transcript) {
+  if (!meetingRegisterId || !transcript?.id) return;
+  await axios.post(
+    `http://127.0.0.1:${PORT}/api/meeting-register/${meetingRegisterId}/transcript-cache`,
+    transcript,
+    {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 120000,
+    }
+  );
+}
+
 // Parse JSON bodies and preserve raw body for signature verification
 // 5mb limit to accommodate large transcript payloads (1500+ sentences)
 app.use(express.json({
@@ -124,6 +136,14 @@ app.post('/webhook/fireflies', async (req, res) => {
         { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
       );
       console.log('Meeting queued/upserted:', upsertResponse.data);
+      if (upsertResponse.data?.id) {
+        try {
+          await cacheTranscriptSnapshot(upsertResponse.data.id, transcript);
+          console.log(`Transcript cache stored for meeting register ${upsertResponse.data.id}`);
+        } catch (cacheError) {
+          console.warn('Transcript cache storage failed; durable retries may need Fireflies:', cacheError.message);
+        }
+      }
 
       // Optional compatibility mode to keep prior behavior during rollout.
       // Default is OFF for durability.
@@ -239,6 +259,15 @@ app.post('/test/process-meeting', async (req, res) => {
         timeout: 30000
       }
     );
+
+    if (queueResponse.data?.id) {
+      try {
+        await cacheTranscriptSnapshot(queueResponse.data.id, transcript);
+        console.log(`Transcript cache stored for manual test row ${queueResponse.data.id}`);
+      } catch (cacheError) {
+        console.warn('Transcript cache storage failed during manual test:', cacheError.message);
+      }
+    }
 
     res.json({
       success: true,

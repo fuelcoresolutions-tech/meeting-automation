@@ -931,6 +931,130 @@ function buildTranscriptBlocks(sentences, transcriptUrl) {
   return blocks;
 }
 
+const TRANSCRIPT_CACHE_CHILD_TITLE = '🤖 Transcript Cache';
+const TRANSCRIPT_CACHE_BEGIN = 'TRANSCRIPT_CACHE_BEGIN';
+const TRANSCRIPT_CACHE_END = 'TRANSCRIPT_CACHE_END';
+const TRANSCRIPT_CACHE_CHUNK_SIZE = 1800;
+
+function getBlockPlainText(block) {
+  const richText = block?.[block.type]?.rich_text || [];
+  return richText.map(rt => rt.plain_text || '').join('');
+}
+
+async function listAllBlockChildren(blockId) {
+  const blocks = [];
+  let cursor = undefined;
+
+  while (true) {
+    const response = await notion.blocks.children.list({
+      block_id: blockId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+    blocks.push(...response.results);
+    if (!response.has_more) break;
+    cursor = response.next_cursor;
+  }
+
+  return blocks;
+}
+
+function normalizeTranscriptSnapshot(transcript) {
+  return {
+    id: transcript.id,
+    title: transcript.title || 'Untitled Meeting',
+    date: transcript.date || null,
+    duration: transcript.duration || 0,
+    organizer_email: transcript.organizer_email || '',
+    participants: Array.isArray(transcript.participants) ? transcript.participants : [],
+    transcript_url: transcript.transcript_url || '',
+    summary: transcript.summary || {},
+    sentences: Array.isArray(transcript.sentences)
+      ? transcript.sentences.map(sentence => ({
+          speaker_name: sentence.speaker_name || null,
+          text: sentence.text || '',
+          start_time: sentence.start_time ?? sentence.raw_start_time ?? null,
+        }))
+      : [],
+    cached_at: new Date().toISOString(),
+  };
+}
+
+function buildTranscriptCacheBlocks(transcript) {
+  const snapshot = normalizeTranscriptSnapshot(transcript);
+  const serialized = JSON.stringify(snapshot);
+  const chunkCount = Math.ceil(serialized.length / TRANSCRIPT_CACHE_CHUNK_SIZE) || 1;
+  const blocks = [
+    buildHeading(2, 'AUTONOMOUS TRANSCRIPT CACHE'),
+    buildCallout(
+      `Cached transcript snapshot for ${snapshot.title}. ` +
+      `Sentences: ${snapshot.sentences.length}. Cached at: ${snapshot.cached_at}`,
+      '🤖'
+    ),
+    buildParagraph(TRANSCRIPT_CACHE_BEGIN),
+  ];
+
+  for (let i = 0; i < serialized.length; i += TRANSCRIPT_CACHE_CHUNK_SIZE) {
+    const chunk = serialized.slice(i, i + TRANSCRIPT_CACHE_CHUNK_SIZE);
+    blocks.push({
+      object: 'block',
+      type: 'code',
+      code: {
+        rich_text: [richText(chunk)],
+        language: 'json',
+      }
+    });
+  }
+
+  if (chunkCount === 0) {
+    blocks.push({
+      object: 'block',
+      type: 'code',
+      code: {
+        rich_text: [richText('{}')],
+        language: 'json',
+      }
+    });
+  }
+
+  blocks.push(buildParagraph(TRANSCRIPT_CACHE_END));
+  return { blocks, snapshot };
+}
+
+async function findTranscriptCacheChild(meetingRegisterId) {
+  const children = await listAllBlockChildren(meetingRegisterId);
+  return children.find(
+    block => block.type === 'child_page' && block.child_page?.title === TRANSCRIPT_CACHE_CHILD_TITLE
+  ) || null;
+}
+
+function parseTranscriptCacheBlocks(blocks) {
+  const chunks = [];
+  let collecting = false;
+
+  for (const block of blocks) {
+    const text = getBlockPlainText(block);
+    if (!text) continue;
+    if (text === TRANSCRIPT_CACHE_BEGIN) {
+      collecting = true;
+      continue;
+    }
+    if (text === TRANSCRIPT_CACHE_END) {
+      collecting = false;
+      break;
+    }
+    if (collecting && (block.type === 'code' || block.type === 'paragraph')) {
+      chunks.push(text);
+    }
+  }
+
+  if (!chunks.length) {
+    throw new Error('Transcript cache markers found but no JSON chunks were stored');
+  }
+
+  return JSON.parse(chunks.join(''));
+}
+
 // POST /api/notes/:id/transcript — append transcript as child page inside meeting note
 router.post('/notes/:id/transcript', async (req, res) => {
   try {
@@ -968,6 +1092,92 @@ router.post('/notes/:id/transcript', async (req, res) => {
     res.json({ success: true, child_page_id: childPageId, blocks_written: allBlocks.length });
   } catch (error) {
     console.error('Error appending transcript:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/meeting-register/:id/transcript-cache — persist transcript snapshot for autonomous retries
+router.post('/meeting-register/:id/transcript-cache', async (req, res) => {
+  try {
+    const meetingRegisterId = req.params.id;
+    const transcript = req.body || {};
+
+    if (!transcript.id || !Array.isArray(transcript.sentences)) {
+      return res.status(400).json({ error: 'Transcript payload must include id and sentences[]' });
+    }
+
+    const existingCache = await findTranscriptCacheChild(meetingRegisterId);
+    if (existingCache) {
+      await notion.pages.update({ page_id: existingCache.id, archived: true });
+    }
+
+    const childPage = await notion.pages.create({
+      parent: { page_id: meetingRegisterId },
+      icon: { type: 'emoji', emoji: '🤖' },
+      properties: {
+        title: { title: [{ text: { content: TRANSCRIPT_CACHE_CHILD_TITLE } }] }
+      }
+    });
+
+    const { blocks, snapshot } = buildTranscriptCacheBlocks(transcript);
+    const BATCH = 100;
+    for (let i = 0; i < blocks.length; i += BATCH) {
+      await notion.blocks.children.append({
+        block_id: childPage.id,
+        children: blocks.slice(i, i + BATCH)
+      });
+    }
+
+    await notion.pages.update({
+      page_id: meetingRegisterId,
+      properties: {
+        'Raw Transcript': {
+          rich_text: [{
+            text: {
+              content: `Cached transcript snapshot stored at ${snapshot.cached_at} (${snapshot.sentences.length} sentences)`
+            }
+          }]
+        }
+      }
+    });
+
+    console.log(
+      `Stored transcript cache for meeting register ${meetingRegisterId} ` +
+      `(${snapshot.sentences.length} sentences, child page ${childPage.id})`
+    );
+
+    res.json({
+      success: true,
+      child_page_id: childPage.id,
+      blocks_written: blocks.length,
+      sentences_cached: snapshot.sentences.length,
+    });
+  } catch (error) {
+    console.error('Error storing transcript cache:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/meeting-register/:id/transcript-cache — load cached transcript snapshot for autonomous retries
+router.get('/meeting-register/:id/transcript-cache', async (req, res) => {
+  try {
+    const meetingRegisterId = req.params.id;
+    const cacheChild = await findTranscriptCacheChild(meetingRegisterId);
+
+    if (!cacheChild) {
+      return res.status(404).json({ error: 'Transcript cache not found' });
+    }
+
+    const blocks = await listAllBlockChildren(cacheChild.id);
+    const transcript = parseTranscriptCacheBlocks(blocks);
+
+    res.json({
+      success: true,
+      child_page_id: cacheChild.id,
+      transcript,
+    });
+  } catch (error) {
+    console.error('Error loading transcript cache:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

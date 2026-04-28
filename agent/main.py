@@ -507,6 +507,29 @@ async def _fetch_fireflies_transcript(external_meeting_id: str) -> Dict[str, Any
     return transcript
 
 
+async def _fetch_cached_transcript(row_id: str) -> Optional[Dict[str, Any]]:
+    """Load a cached transcript snapshot from the Meeting Register row if available."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{NOTION_API_BASE}/api/meeting-register/{row_id}/transcript-cache",
+                timeout=60.0,
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            payload = resp.json() or {}
+            transcript = payload.get("transcript")
+            if transcript:
+                logger.info(
+                    f"Loaded cached transcript snapshot for meeting register {row_id} "
+                    f"({len(transcript.get('sentences', []))} sentences)"
+                )
+            return transcript
+    except Exception as e:
+        raise RuntimeError(f"Transcript cache lookup failed for {row_id}: {e}") from e
+
+
 def _is_due_for_retry(row: Dict[str, Any], now_dt: datetime) -> bool:
     """Check if the row should be attempted right now."""
     status = (row.get("processingStatus") or "").strip()
@@ -616,7 +639,12 @@ async def _process_retry_row(row: Dict[str, Any]) -> None:
     try:
         if not external_id:
             raise RuntimeError("Missing external meeting id")
-        transcript = await _fetch_fireflies_transcript(external_id)
+        transcript = await _fetch_cached_transcript(row_id)
+        if transcript:
+            logger.info(f"Using cached transcript snapshot for meeting {row_id}; Fireflies fetch skipped")
+        else:
+            logger.info(f"No cached transcript snapshot for meeting {row_id}; fetching from Fireflies")
+            transcript = await _fetch_fireflies_transcript(external_id)
         result = await process_meeting_transcript(transcript)
         if not result.get("success"):
             raise RuntimeError(result.get("error") or "Unknown processing error")
@@ -716,6 +744,10 @@ async def _retry_worker_loop():
                 await asyncio.sleep(RETRY_POLL_SECONDS)
                 continue
             for row in due_rows:
+                active_outage = _get_active_provider_outage()
+                if active_outage:
+                    await _pause_row_for_outage(row, active_outage)
+                    continue
                 await _process_retry_row(row)
         except Exception as loop_error:
             error_text = str(loop_error)
