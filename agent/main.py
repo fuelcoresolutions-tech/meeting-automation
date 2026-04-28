@@ -7,9 +7,11 @@ from datetime import datetime
 import asyncio
 import logging
 import os
+import re
 import traceback
 import httpx
 from datetime import timezone, timedelta
+from email.utils import parsedate_to_datetime
 from dotenv import load_dotenv
 
 # Load environment variables from parent directory
@@ -145,6 +147,8 @@ FIREFLY_API_KEY = os.getenv("FIREFLY_API_KEY", "")
 ENABLE_DURABLE_RETRY_WORKER = os.getenv("ENABLE_DURABLE_RETRY_WORKER", "true").lower() == "true"
 RETRY_POLL_SECONDS = int(os.getenv("RETRY_POLL_SECONDS", "20"))
 RATE_LIMIT_COOLDOWN_MINUTES = int(os.getenv("RATE_LIMIT_COOLDOWN_MINUTES", "15"))
+BILLING_COOLDOWN_MINUTES = int(os.getenv("BILLING_COOLDOWN_MINUTES", "360"))
+AUTH_COOLDOWN_MINUTES = int(os.getenv("AUTH_COOLDOWN_MINUTES", "180"))
 # Stronger long-outage retry policy:
 # retries quickly at first, then keeps trying forever at wider intervals.
 RETRY_BACKOFF_SECONDS = [
@@ -155,6 +159,7 @@ RETRY_BACKOFF_SECONDS = [
 ]
 STALE_REQUEUE_HOURS = int(os.getenv("STALE_REQUEUE_HOURS", "24"))
 _retry_worker_task: Optional[asyncio.Task] = None
+_provider_outages: Dict[str, Dict[str, Any]] = {}
 
 
 async def _append_transcript_to_note(note_id: str, transcript_data: dict):
@@ -230,6 +235,114 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _detect_provider(error_text: str) -> str:
+    """Best-effort provider detection for retry classification and service holds."""
+    text = (error_text or "").lower()
+    if any(marker in text for marker in ["fireflies", "graphql", "transcript fetch", "transcript not found", "firefly_api_key"]):
+        return "fireflies"
+    if any(marker in text for marker in ["anthropic", "claude", "rate_limit_error", "messages.create", "overloaded_error", "anthropic_api_key"]):
+        return "anthropic"
+    if any(marker in text for marker in ["provider=notion", "notion", "meeting-register", "api/context", "/api/"]):
+        return "notion"
+    return "upstream"
+
+
+def _provider_code(provider: str, suffix: str) -> str:
+    prefix = (provider or "upstream").upper().replace("-", "_")
+    return f"{prefix}_{suffix}"
+
+
+def _provider_label(provider: str) -> str:
+    return {
+        "fireflies": "Fireflies",
+        "anthropic": "Anthropic / Claude",
+        "notion": "Notion",
+        "upstream": "Upstream service",
+    }.get(provider, provider.title())
+
+
+def _extract_retry_after_iso(error_text: str) -> Optional[str]:
+    """Extract provider-supplied retry timestamps from human-readable error messages."""
+    if not error_text:
+        return None
+
+    patterns = [
+        r"retry after ([A-Za-z]{3}, \d{1,2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT)",
+        r"retry after (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, error_text, re.IGNORECASE)
+        if not match:
+            continue
+        raw_value = match.group(1).strip()
+        try:
+            if "GMT" in raw_value:
+                parsed = parsedate_to_datetime(raw_value)
+            else:
+                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            return parsed.astimezone(timezone.utc).isoformat()
+        except Exception:
+            continue
+    return None
+
+
+def _get_active_provider_outage() -> Optional[Dict[str, Any]]:
+    """Return the current provider-wide outage hold, if any, and purge expired holds."""
+    now_dt = datetime.now(timezone.utc)
+    expired = [
+        provider for provider, state in _provider_outages.items()
+        if state["until_dt"] <= now_dt
+    ]
+    for provider in expired:
+        del _provider_outages[provider]
+
+    if not _provider_outages:
+        return None
+
+    # Any active outage blocks processing because all meetings need the same upstream services.
+    return max(_provider_outages.values(), key=lambda state: state["until_dt"])
+
+
+def _clear_provider_outages() -> List[str]:
+    """Clear in-memory provider holds after credits are restored or operator intervention."""
+    cleared = list(_provider_outages.keys())
+    _provider_outages.clear()
+    return cleared
+
+
+def _register_provider_outage(classification: Dict[str, Any], error_text: str, next_retry_at: Optional[str]) -> Dict[str, Any]:
+    """Pause the worker for provider-wide outages like credits/auth/rate limits."""
+    provider = classification.get("provider", "upstream")
+    until_iso = next_retry_at or _compute_next_retry_iso(0)
+    until_dt = datetime.fromisoformat(until_iso.replace("Z", "+00:00"))
+    state = {
+        "provider": provider,
+        "code": classification["code"],
+        "message": error_text,
+        "until_iso": until_dt.astimezone(timezone.utc).isoformat(),
+        "until_dt": until_dt.astimezone(timezone.utc),
+    }
+    existing = _provider_outages.get(provider)
+    if not existing or existing["until_dt"] < state["until_dt"]:
+        _provider_outages[provider] = state
+    return _provider_outages[provider]
+
+
+def _build_hold_message(classification: Dict[str, Any], error_text: str, next_retry_at: Optional[str]) -> str:
+    provider_label = _provider_label(classification.get("provider", "upstream"))
+    if next_retry_at:
+        return (
+            f"{provider_label} is temporarily unavailable for processing. "
+            f"The meeting remains queued and will retry after {next_retry_at}. "
+            f"Original error: {error_text}"
+        )
+    return (
+        f"{provider_label} is temporarily unavailable for processing. "
+        f"The meeting remains queued until the service recovers. "
+        f"Original error: {error_text}"
+    )
+
+
 def _classify_processing_error(error_text: str) -> Dict[str, Any]:
     """
     Classify failures into retryable vs terminal.
@@ -238,26 +351,74 @@ def _classify_processing_error(error_text: str) -> Dict[str, Any]:
     - Terminal means "needs human/config fix" (bad payload/schema/validation).
     """
     text = (error_text or "").lower()
+    provider = _detect_provider(error_text)
+    retry_after_iso = _extract_retry_after_iso(error_text)
+    billing_markers = [
+        "credit balance", "credits expired", "insufficient credits",
+        "insufficient_quota", "quota exceeded", "quota", "billing", "payment required",
+        "payment", "top up", "top-up", "insufficient balance"
+    ]
+    auth_markers = [
+        "unauthorized", "forbidden", "authentication", "invalid api key",
+        "invalid token", "api key", "access denied", "401", "403"
+    ]
     retryable_markers = [
         "ratelimit", "rate limit", "429", "overloaded", "temporarily unavailable",
-        "api connection", "connection reset", "timeout", "network",
-        "credit", "quota", "insufficient", "billing", "payment"
+        "api connection", "connection reset", "timeout", "network"
     ]
     terminal_markers = [
-        "validation", "invalid", "not found", "400", "401", "403", "schema", "missing required"
+        "validation", "not found", "400", "schema", "missing required"
     ]
+    if any(marker in text for marker in billing_markers):
+        return {
+            "retryable": True,
+            "code": _provider_code(provider, "AWAITING_CREDITS"),
+            "provider": provider,
+            "cooldown_minutes": BILLING_COOLDOWN_MINUTES,
+            "next_retry_at": retry_after_iso,
+            "count_retry": False,
+            "outage_scope": "provider",
+        }
+    if any(marker in text for marker in auth_markers):
+        return {
+            "retryable": True,
+            "code": _provider_code(provider, "AUTH_BLOCKED"),
+            "provider": provider,
+            "cooldown_minutes": AUTH_COOLDOWN_MINUTES,
+            "count_retry": False,
+            "outage_scope": "provider",
+        }
     # Add specific rate limit detection
     if "too many requests" in text or "retry after" in text:
         return {
             "retryable": True,
-            "code": "RATE_LIMITED",
+            "code": _provider_code(provider, "RATE_LIMITED"),
+            "provider": provider,
             "cooldown_minutes": RATE_LIMIT_COOLDOWN_MINUTES,
+            "next_retry_at": retry_after_iso,
+            "count_retry": False,
+            "outage_scope": "provider",
         }
     if any(marker in text for marker in retryable_markers):
-        return {"retryable": True, "code": "RETRYABLE_UPSTREAM_LIMIT"}
+        return {
+            "retryable": True,
+            "code": _provider_code(provider, "RETRYABLE_UPSTREAM_LIMIT"),
+            "provider": provider,
+            "count_retry": True,
+        }
     if any(marker in text for marker in terminal_markers):
-        return {"retryable": False, "code": "TERMINAL_VALIDATION"}
-    return {"retryable": True, "code": "RETRYABLE_UNKNOWN"}
+        return {
+            "retryable": False,
+            "code": _provider_code(provider, "TERMINAL_VALIDATION"),
+            "provider": provider,
+            "count_retry": True,
+        }
+    return {
+        "retryable": True,
+        "code": _provider_code(provider, "RETRYABLE_UNKNOWN"),
+        "provider": provider,
+        "count_retry": True,
+    }
 
 
 def _compute_next_retry_iso(retry_count: int) -> str:
@@ -269,21 +430,27 @@ def _compute_next_retry_iso(retry_count: int) -> str:
 
 async def _fetch_meeting_register_rows() -> List[Dict[str, Any]]:
     """Load Meeting Register rows via the bridge API."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{NOTION_API_BASE}/api/meeting-register", timeout=60.0)
-        resp.raise_for_status()
-        return resp.json() or []
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{NOTION_API_BASE}/api/meeting-register", timeout=60.0)
+            resp.raise_for_status()
+            return resp.json() or []
+    except Exception as e:
+        raise RuntimeError(f"Notion meeting register fetch failed: {e}") from e
 
 
 async def _patch_meeting_register(row_id: str, payload: Dict[str, Any]) -> None:
     """Patch a single Meeting Register row with queue state updates."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.patch(
-            f"{NOTION_API_BASE}/api/meeting-register/{row_id}",
-            json=payload,
-            timeout=60.0,
-        )
-        resp.raise_for_status()
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.patch(
+                f"{NOTION_API_BASE}/api/meeting-register/{row_id}",
+                json=payload,
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"Notion meeting register patch failed for {row_id}: {e}") from e
 
 
 async def _fetch_fireflies_transcript(external_meeting_id: str) -> Dict[str, Any]:
@@ -330,10 +497,10 @@ async def _fetch_fireflies_transcript(external_meeting_id: str) -> Dict[str, Any
         logger.warning(
             f"Fireflies transcript fetch returned GraphQL errors for {external_meeting_id}: {data['errors']}"
         )
-        raise RuntimeError(error_message)
+        raise RuntimeError(f"Fireflies transcript fetch failed: {error_message}")
     transcript = (data.get("data") or {}).get("transcript")
     if not transcript:
-        raise RuntimeError("Transcript not found")
+        raise RuntimeError("Fireflies transcript not found")
     raw_date = transcript.get("date")
     if isinstance(raw_date, (int, float)):
         transcript["date"] = datetime.fromtimestamp(raw_date / 1000, tz=timezone.utc).isoformat()
@@ -381,6 +548,27 @@ def _is_stale_unprocessed_row(row: Dict[str, Any], now_dt: datetime) -> bool:
         return True
     age_hours = (now_dt - ref_dt).total_seconds() / 3600
     return age_hours >= STALE_REQUEUE_HOURS
+
+
+async def _pause_row_for_outage(row: Dict[str, Any], outage: Dict[str, Any]) -> None:
+    """Move due rows behind the active provider hold without consuming retry attempts."""
+    if (
+        row.get("nextRetryAt") == outage["until_iso"]
+        and row.get("lastErrorCode") == outage["code"]
+    ):
+        return
+
+    await _patch_meeting_register(row["id"], {
+        "processingStatus": "Pending",
+        "nextRetryAt": outage["until_iso"],
+        "lastErrorCode": outage["code"],
+        "lastErrorMessage": _build_hold_message(
+            {"provider": outage["provider"]},
+            outage["message"],
+            outage["until_iso"],
+        ),
+        "retrySource": f"{outage['provider']}_service_hold",
+    })
 
 
 async def _process_retry_row(row: Dict[str, Any]) -> None:
@@ -446,28 +634,39 @@ async def _process_retry_row(row: Dict[str, Any]) -> None:
     except Exception as e:
         error_text = str(e)
         classification = _classify_processing_error(error_text)
-        
-        # Handle rate limits with extended cooldown
-        if classification.get("code") == "RATE_LIMITED":
-            cooldown_minutes = classification.get("cooldown_minutes", RATE_LIMIT_COOLDOWN_MINUTES)
-            next_retry_dt = datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
-            next_retry = next_retry_dt.isoformat()
+
+        retry_increment = 1 if classification.get("count_retry", True) else 0
+        next_retry = classification.get("next_retry_at")
+        if classification.get("outage_scope") == "provider":
+            if not next_retry:
+                cooldown_minutes = classification.get("cooldown_minutes", RATE_LIMIT_COOLDOWN_MINUTES)
+                next_retry_dt = datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
+                next_retry = next_retry_dt.isoformat()
+            outage = _register_provider_outage(classification, error_text, next_retry)
+            next_retry = outage["until_iso"]
+            hold_message = _build_hold_message(classification, error_text, next_retry)
             logger.warning(
-                f"Rate limit detected for meeting {row_id}, cooling down for "
-                f"{cooldown_minutes} minute(s). Error: {error_text}"
+                f"{_provider_label(classification.get('provider', 'upstream'))} outage detected for meeting {row_id}. "
+                f"Retry paused until {next_retry}. Error: {error_text}"
             )
         else:
-            next_retry = _compute_next_retry_iso(retry_count + 1) if classification["retryable"] else None
+            hold_message = error_text
+            next_retry = next_retry or (_compute_next_retry_iso(retry_count + 1) if classification["retryable"] else None)
             logger.warning(
                 f"Meeting {row_id} processing failed with {classification['code']}: {error_text}"
             )
-            
+
         await _patch_meeting_register(row_id, {
             "processingStatus": "Pending" if classification["retryable"] else "Failed",
-            "retryCount": retry_count + 1,
+            "retryCount": retry_count + retry_increment,
             "nextRetryAt": next_retry,
             "lastErrorCode": classification["code"],
-            "lastErrorMessage": error_text,
+            "lastErrorMessage": hold_message,
+            "retrySource": (
+                f"{classification.get('provider', 'upstream')}_service_hold"
+                if classification.get("outage_scope") == "provider"
+                else row.get("retrySource")
+            ),
         })
 
 
@@ -476,6 +675,15 @@ async def _retry_worker_loop():
     logger.info("Durable retry worker started")
     while True:
         try:
+            active_outage = _get_active_provider_outage()
+            if active_outage and active_outage["provider"] == "notion":
+                logger.warning(
+                    f"Skipping retry cycle while {_provider_label(active_outage['provider'])} is paused "
+                    f"until {active_outage['until_iso']}"
+                )
+                await asyncio.sleep(RETRY_POLL_SECONDS)
+                continue
+
             rows = await _fetch_meeting_register_rows()
             now_dt = datetime.now(timezone.utc)
 
@@ -497,10 +705,33 @@ async def _retry_worker_loop():
             due_rows = [row for row in rows if _is_due_for_retry(row, now_dt)]
             if due_rows:
                 logger.info(f"Retry worker found {len(due_rows)} due meeting(s)")
+            active_outage = _get_active_provider_outage()
+            if active_outage and due_rows:
+                logger.warning(
+                    f"Deferring {len(due_rows)} due meeting(s) while {_provider_label(active_outage['provider'])} "
+                    f"is paused until {active_outage['until_iso']}"
+                )
+                for row in due_rows:
+                    await _pause_row_for_outage(row, active_outage)
+                await asyncio.sleep(RETRY_POLL_SECONDS)
+                continue
             for row in due_rows:
                 await _process_retry_row(row)
         except Exception as loop_error:
-            logger.error(f"Retry worker loop error: {loop_error}")
+            error_text = str(loop_error)
+            classification = _classify_processing_error(error_text)
+            if classification.get("outage_scope") == "provider":
+                next_retry = classification.get("next_retry_at")
+                if not next_retry:
+                    cooldown_minutes = classification.get("cooldown_minutes", RATE_LIMIT_COOLDOWN_MINUTES)
+                    next_retry = (datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)).isoformat()
+                outage = _register_provider_outage(classification, error_text, next_retry)
+                logger.error(
+                    f"Retry worker loop paused by {_provider_label(outage['provider'])} outage until "
+                    f"{outage['until_iso']}: {error_text}"
+                )
+            else:
+                logger.error(f"Retry worker loop error: {loop_error}")
         await asyncio.sleep(RETRY_POLL_SECONDS)
 
 
@@ -516,6 +747,7 @@ async def get_processing_status(meeting_id: str):
 @app.post("/worker/retry-pending-now")
 async def retry_pending_now():
     """Operator endpoint: force all pending rows to retry immediately."""
+    cleared_outages = _clear_provider_outages()
     rows = await _fetch_meeting_register_rows()
     updated = 0
     for row in rows:
@@ -523,7 +755,21 @@ async def retry_pending_now():
         if status in {"Pending", "Failed"}:
             await _patch_meeting_register(row["id"], {"nextRetryAt": _now_iso(), "processingStatus": "Pending"})
             updated += 1
-    return {"success": True, "updated": updated}
+    return {"success": True, "updated": updated, "clearedOutages": cleared_outages}
+
+
+@app.get("/worker/outages")
+async def get_worker_outages():
+    """Show active provider holds so operators can see why retries are paused."""
+    active = _get_active_provider_outage()
+    if not active:
+        return {"active": []}
+    return {"active": [{
+        "provider": active["provider"],
+        "code": active["code"],
+        "until": active["until_iso"],
+        "message": active["message"],
+    }]}
 
 
 @app.post("/worker/retry-meeting/{external_meeting_id}")

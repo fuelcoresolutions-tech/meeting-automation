@@ -127,23 +127,57 @@ app.post('/webhook/fireflies', async (req, res) => {
 
       // Optional compatibility mode to keep prior behavior during rollout.
       // Default is OFF for durability.
+      const immediateProcessing = {
+        attempted: ENABLE_IMMEDIATE_PROCESSING,
+        success: false,
+        deferred: false,
+        error: null,
+      };
       if (ENABLE_IMMEDIATE_PROCESSING) {
         console.log('Immediate processing is enabled; forwarding transcript to Claude Agent...');
-        await axios.post(
-          `${CLAUDE_AGENT_URL}/process-transcript`,
-          transcript,
-          {
-            headers: { 'Content-Type': 'application/json' },
-            timeout: 120000
+        try {
+          await axios.post(
+            `${CLAUDE_AGENT_URL}/process-transcript`,
+            transcript,
+            {
+              headers: { 'Content-Type': 'application/json' },
+              timeout: 120000
+            }
+          );
+          immediateProcessing.success = true;
+        } catch (dispatchError) {
+          immediateProcessing.deferred = true;
+          immediateProcessing.error = dispatchError.message;
+          console.warn(
+            'Immediate processing failed; meeting remains queued for durable retry worker:',
+            dispatchError.message
+          );
+          if (upsertResponse.data?.id) {
+            try {
+              await axios.patch(
+                `http://127.0.0.1:${PORT}/api/meeting-register/${upsertResponse.data.id}`,
+                {
+                  processingStatus: 'Pending',
+                  nextRetryAt: new Date().toISOString(),
+                  retrySource: 'immediate_processing_deferred',
+                  lastErrorCode: 'IMMEDIATE_PROCESSING_DEFERRED',
+                  lastErrorMessage: `Immediate processing deferred: ${dispatchError.message}`,
+                },
+                { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+              );
+            } catch (patchError) {
+              console.warn('Failed to record deferred immediate-processing state:', patchError.message);
+            }
           }
-        );
+        }
       }
 
       res.status(200).json({
         success: true,
         message: 'Transcript queued for durable background processing',
         meetingId: payload.meetingId,
-        queue: upsertResponse.data
+        queue: upsertResponse.data,
+        immediateProcessing,
       });
 
     } catch (error) {

@@ -358,6 +358,15 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
             logger.info(f"  Validator applied {len(validation['corrections'])} corrections")
         tool_input = validation["payload"]
 
+    def _parse_create_response(response: httpx.Response, label: str) -> dict:
+        response.raise_for_status()
+        result = response.json()
+        if result.get("success") is False:
+            raise RuntimeError(f"{label} request returned success=false: {result}")
+        if not result.get("id"):
+            raise RuntimeError(f"{label} response did not include an id: {result}")
+        return result
+
     logger.info(f"Connecting to Notion API at: {NOTION_API_BASE}")
     async with httpx.AsyncClient() as client:
         try:
@@ -370,6 +379,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                 url = f"{NOTION_API_BASE}/api/projects"
                 logger.info(f"GET {url}")
                 response = await client.get(url, timeout=30.0)
+                response.raise_for_status()
                 projects = response.json()
                 if not projects:
                     result_str = "No projects found in the database."
@@ -401,7 +411,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                     json=payload,
                     timeout=30.0
                 )
-                result = response.json()
+                result = _parse_create_response(response, "create_meeting_note")
                 return f"Created meeting note '{tool_input.get('title')}' with ID: {result.get('id')}"
 
             elif tool_name == "create_task":
@@ -420,7 +430,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                     },
                     timeout=30.0
                 )
-                result = response.json()
+                result = _parse_create_response(response, "create_task")
                 return f"Created task '{tool_input.get('name')}' (ID: {result.get('id')})"
 
             elif tool_name == "create_subtask":
@@ -440,7 +450,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                     },
                     timeout=30.0
                 )
-                result = response.json()
+                result = _parse_create_response(response, "create_subtask")
                 return f"Created subtask '{tool_input.get('name')}' (ID: {result.get('id')})"
 
             elif tool_name == "create_meeting_register":
@@ -449,7 +459,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                     json=tool_input,
                     timeout=30.0
                 )
-                result = response.json()
+                result = _parse_create_response(response, "create_meeting_register")
                 return f"Created meeting register entry '{tool_input.get('title')}' (ID: {result.get('id')})"
 
             elif tool_name == "create_eos_issue":
@@ -458,7 +468,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                     json=tool_input,
                     timeout=30.0
                 )
-                result = response.json()
+                result = _parse_create_response(response, "create_eos_issue")
                 return f"Created EOS issue '{tool_input.get('title')}' (ID: {result.get('id')})"
 
             elif tool_name == "create_speaker_alias":
@@ -467,7 +477,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                     json=tool_input,
                     timeout=30.0
                 )
-                result = response.json()
+                result = _parse_create_response(response, "create_speaker_alias")
                 return f"Created speaker alias '{tool_input.get('alias')}' (ID: {result.get('id')})"
 
             elif tool_name == "create_meeting_agenda":
@@ -489,7 +499,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                     },
                     timeout=30.0
                 )
-                result = response.json()
+                result = _parse_create_response(response, "create_meeting_agenda")
                 return f"Created meeting agenda '{tool_input.get('title')}' for {tool_input.get('meeting_date')} (ID: {result.get('id')})"
 
             else:
@@ -497,7 +507,7 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
 
         except Exception as e:
             logger.error(f"Error executing {tool_name}: {str(e)}")
-            return f"Error executing {tool_name}: {str(e)}"
+            return f"TOOL_ERROR[{tool_name}][provider=notion]: {str(e)}"
 
 
 def detect_meeting_complexity(transcript_data: dict) -> str:
@@ -786,6 +796,7 @@ Do NOT call get_projects() - the project list is already provided above."""
 
     # Session-scoped cache for tool results
     projects_cache = {}
+    tool_failures = []
 
     # Initialize the output validator (Sonnet-powered cross-check layer)
     validator = OutputValidator()
@@ -856,10 +867,14 @@ Do NOT call get_projects() - the project list is already provided above."""
                     validator=validator, context_section=context_section
                 )
                 logger.info(f"Tool result: {result[:200]}...")
+                if result.startswith("TOOL_ERROR["):
+                    tool_failures.append(result)
                 # Capture the created meeting note ID for transcript attachment
                 if tool_use.name == "create_meeting_note" and "with ID:" in result:
                     try:
-                        results["created_note_id"] = result.split("with ID:")[-1].strip()
+                        created_note_id = result.split("with ID:")[-1].strip()
+                        if created_note_id and created_note_id.lower() not in {"none", "undefined", "null"}:
+                            results["created_note_id"] = created_note_id
                     except Exception:
                         pass
                 tool_results.append({
@@ -870,7 +885,18 @@ Do NOT call get_projects() - the project list is already provided above."""
 
             messages.append({"role": "user", "content": tool_results})
 
-        results["success"] = True
+        if tool_failures:
+            results["error"] = "Tool execution failures: " + " | ".join(tool_failures[:3])
+            logger.error(results["error"])
+        elif not results["created_note_id"]:
+            results["error"] = "Meeting note was not created; leaving meeting queued for retry"
+            logger.error(results["error"])
+        else:
+            results["success"] = True
+
+        if results["error"] and not results["summary"]:
+            results["summary"] = results["error"]
+            results["messages"].append(results["error"])
 
         # Calculate cost — Sonnet rates: $3/MTok input, $15/MTok output
         tu = results["token_usage"]
