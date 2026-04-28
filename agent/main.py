@@ -530,6 +530,20 @@ async def _fetch_cached_transcript(row_id: str) -> Optional[Dict[str, Any]]:
         raise RuntimeError(f"Transcript cache lookup failed for {row_id}: {e}") from e
 
 
+async def _store_cached_transcript(row_id: str, transcript: Dict[str, Any]) -> None:
+    """Persist a transcript snapshot on the Meeting Register row for future autonomous retries."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{NOTION_API_BASE}/api/meeting-register/{row_id}/transcript-cache",
+                json=transcript,
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"Transcript cache store failed for {row_id}: {e}") from e
+
+
 def _is_due_for_retry(row: Dict[str, Any], now_dt: datetime) -> bool:
     """Check if the row should be attempted right now."""
     status = (row.get("processingStatus") or "").strip()
@@ -645,6 +659,14 @@ async def _process_retry_row(row: Dict[str, Any]) -> None:
         else:
             logger.info(f"No cached transcript snapshot for meeting {row_id}; fetching from Fireflies")
             transcript = await _fetch_fireflies_transcript(external_id)
+            try:
+                await _store_cached_transcript(row_id, transcript)
+                logger.info(f"Stored transcript snapshot for meeting {row_id} after Fireflies fallback fetch")
+            except Exception as cache_error:
+                logger.warning(
+                    f"Transcript cache store failed for meeting {row_id}; "
+                    f"future retries may still need Fireflies. Error: {cache_error}"
+                )
         result = await process_meeting_transcript(transcript)
         if not result.get("success"):
             raise RuntimeError(result.get("error") or "Unknown processing error")
