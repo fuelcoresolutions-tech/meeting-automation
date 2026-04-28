@@ -83,6 +83,12 @@ fi
 
 # Create log directory
 mkdir -p /tmp/logs
+touch /tmp/logs/webhook.log /tmp/logs/agent.log /tmp/logs/immediate-retry.log /tmp/logs/status.log
+
+# Surface service logs in Railway so webhook and worker activity is visible.
+tail -n 0 -F /tmp/logs/webhook.log /tmp/logs/agent.log /tmp/logs/immediate-retry.log /tmp/logs/status.log &
+LOG_TAIL_PID=$!
+echo "📡 Streaming service logs to Railway output (tail PID: $LOG_TAIL_PID)"
 
 # Start webhook server in background
 echo "🌐 Starting webhook server..."
