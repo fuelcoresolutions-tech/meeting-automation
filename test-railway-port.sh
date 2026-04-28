@@ -2,6 +2,15 @@
 
 echo "🧪 Testing Railway port configuration..."
 
+http_ok() {
+    node -e "
+        const url = process.argv[1];
+        fetch(url)
+            .then((response) => process.exit(response.ok ? 0 : 1))
+            .catch(() => process.exit(1));
+    " "$1" > /dev/null 2>&1
+}
+
 # Kill any existing processes
 pkill -f webhook-server.js
 pkill -f uvicorn
@@ -23,7 +32,7 @@ sleep 3
 
 # Test health check using Railway's PORT
 echo "🏥 Testing health endpoint on port ${PORT}..."
-if curl -f http://localhost:${PORT}/health > /dev/null 2>&1; then
+if http_ok "http://127.0.0.1:${PORT}/health"; then
     echo "✅ Health check successful on port ${PORT}"
 else
     echo "❌ Health check failed on port ${PORT}"

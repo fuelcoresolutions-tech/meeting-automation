@@ -28,6 +28,7 @@ RUN . /app/venv/bin/activate && pip install --no-cache-dir -r agent/requirements
 COPY . .
 
 # Make start script executable
+RUN chmod +x /app/start-railway.sh
 RUN chmod +x /app/start.sh
 RUN chmod +x /app/start-simple.sh
 

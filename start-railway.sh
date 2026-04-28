@@ -3,25 +3,58 @@
 
 set -e
 
+http_ok() {
+    node -e "
+        const url = process.argv[1];
+        fetch(url)
+            .then((response) => process.exit(response.ok ? 0 : 1))
+            .catch(() => process.exit(1));
+    " "$1" > /dev/null 2>&1
+}
+
+http_post() {
+    node -e "
+        const url = process.argv[1];
+        fetch(url, { method: 'POST' })
+            .then((response) => process.exit(response.ok ? 0 : 1))
+            .catch((error) => {
+                console.error(error.message);
+                process.exit(1);
+            });
+    " "$1"
+}
+
 echo "🚀 Starting Meeting Automation System on Railway"
 echo "=============================================="
 
 # Set environment for Railway
-export NODE_ENV=production
-export LOG_LEVEL=info
-export ENABLE_IMMEDIATE_PROCESSING=true
-export ENABLE_DURABLE_RETRY_WORKER=true
-export RETRY_POLL_SECONDS=10
-export MAX_RETRY_ATTEMPTS=50
+export PORT="${PORT:-3000}"
+export NODE_ENV="${NODE_ENV:-production}"
+export LOG_LEVEL="${LOG_LEVEL:-info}"
+export ENABLE_IMMEDIATE_PROCESSING="${ENABLE_IMMEDIATE_PROCESSING:-true}"
+export ENABLE_DURABLE_RETRY_WORKER="${ENABLE_DURABLE_RETRY_WORKER:-true}"
+export RETRY_POLL_SECONDS="${RETRY_POLL_SECONDS:-10}"
+export MAX_RETRY_ATTEMPTS="${MAX_RETRY_ATTEMPTS:-50}"
+export CLAUDE_AGENT_URL="${CLAUDE_AGENT_URL:-http://127.0.0.1:8000}"
+export NOTION_API_BASE="${NOTION_API_BASE:-http://127.0.0.1:${PORT}}"
+PYTHON_BIN="${PYTHON_BIN:-/app/venv/bin/python}"
 
 # Log environment status
 echo "📊 Environment Configuration:"
+echo "  - PORT: $PORT"
 echo "  - NODE_ENV: $NODE_ENV"
 echo "  - LOG_LEVEL: $LOG_LEVEL"
 echo "  - ENABLE_IMMEDIATE_PROCESSING: $ENABLE_IMMEDIATE_PROCESSING"
 echo "  - ENABLE_DURABLE_RETRY_WORKER: $ENABLE_DURABLE_RETRY_WORKER"
 echo "  - RETRY_POLL_SECONDS: $RETRY_POLL_SECONDS"
 echo "  - MAX_RETRY_ATTEMPTS: $MAX_RETRY_ATTEMPTS"
+echo "  - CLAUDE_AGENT_URL: $CLAUDE_AGENT_URL"
+echo "  - NOTION_API_BASE: $NOTION_API_BASE"
+
+if [ ! -x "$PYTHON_BIN" ]; then
+    echo "❌ ERROR: Python runtime not found at $PYTHON_BIN"
+    exit 1
+fi
 
 # Check API keys (skip validation for local testing)
 echo "🔑 Checking API Keys..."
@@ -69,7 +102,7 @@ fi
 # Wait for webhook server to start
 echo "⏳ Waiting for webhook server to start..."
 for i in {1..30}; do
-    if curl -f http://localhost:${PORT}/health > /dev/null 2>&1; then
+    if http_ok "http://127.0.0.1:${PORT}/health"; then
         echo "✅ Webhook server is ready"
         break
     fi
@@ -77,7 +110,7 @@ for i in {1..30}; do
         echo "❌ Webhook server failed to start"
         echo "🔍 Checking webhook server logs..."
         tail -10 /tmp/logs/webhook.log 2>/dev/null || echo "No webhook logs available"
-        echo "🔧 Debug info: PORT=${PORT}, trying http://localhost:${PORT}/health"
+        echo "🔧 Debug info: PORT=${PORT}, trying http://127.0.0.1:${PORT}/health"
         exit 1
     fi
     sleep 1
@@ -86,19 +119,21 @@ done
 # Start Python agent
 echo "🤖 Starting Python agent..."
 cd /app/agent
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info > /tmp/logs/agent.log 2>&1 &
+"$PYTHON_BIN" -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info > /tmp/logs/agent.log 2>&1 &
 AGENT_PID=$!
 echo "Agent PID: $AGENT_PID"
 
 # Wait for agent to start
 echo "⏳ Waiting for agent to start..."
 for i in {1..30}; do
-    if curl -f http://localhost:8000/health > /dev/null 2>&1; then
+    if http_ok "http://127.0.0.1:8000/health"; then
         echo "✅ Agent is ready"
         break
     fi
     if [ $i -eq 30 ]; then
         echo "❌ Agent failed to start"
+        echo "🔍 Checking agent logs..."
+        tail -10 /tmp/logs/agent.log 2>/dev/null || echo "No agent logs available"
         exit 1
     fi
     sleep 1
@@ -112,7 +147,7 @@ echo "  - Health: http://localhost:${PORT}/health"
 
 # Force immediate processing of pending meetings
 echo "🔄 Processing pending meetings immediately..."
-curl -X POST http://localhost:8000/worker/retry-pending-now > /tmp/logs/immediate-retry.log 2>&1 &
+http_post "http://127.0.0.1:8000/worker/retry-pending-now" > /tmp/logs/immediate-retry.log 2>&1 &
 RETRY_PID=$!
 
 # Monitor and log
@@ -134,7 +169,7 @@ while true; do
     if ! kill -0 $AGENT_PID 2>/dev/null; then
         echo "❌ Agent died, restarting..."
         cd /app/agent
-        python -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info > /tmp/logs/agent.log 2>&1 &
+        "$PYTHON_BIN" -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info > /tmp/logs/agent.log 2>&1 &
         AGENT_PID=$!
     fi
     
