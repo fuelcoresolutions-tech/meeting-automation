@@ -717,13 +717,17 @@ export async function updateMeetingRegister(meetingRegisterId, data) {
 }
 
 // Upsert meeting register row keyed by external meeting ID.
-export async function upsertMeetingRegisterByExternalId(externalMeetingId, data) {
+// `createOnlyFields` are applied only on create — useful for placeholder values
+// (e.g. webhook-time title before transcript fetch) that must not clobber
+// real data on a duplicate webhook for an already-processed meeting.
+export async function upsertMeetingRegisterByExternalId(externalMeetingId, data, createOnlyFields = {}) {
   const existing = await findMeetingRegisterByExternalId(externalMeetingId);
   if (existing) {
     await updateMeetingRegister(existing.id, data);
     return { id: existing.id, created: false };
   }
   const created = await createMeetingRegister({
+    ...createOnlyFields,
     ...data,
     externalMeetingId
   });

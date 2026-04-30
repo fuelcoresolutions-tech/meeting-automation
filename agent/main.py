@@ -549,6 +549,14 @@ def _is_due_for_retry(row: Dict[str, Any], now_dt: datetime) -> bool:
     status = (row.get("processingStatus") or "").strip()
     if status not in {"Pending", "Failed", "Processing"}:
         return False
+
+    # Terminal Failed rows (404, validation, max retries) require explicit
+    # forceRerun to come back. Without this, a 404 from Fireflies sets
+    # nextRetryAt=None and the worker would re-fire on every poll, burning
+    # the upstream rate-limit budget.
+    if status == "Failed" and not bool(row.get("forceRerun")):
+        return False
+
     next_retry = row.get("nextRetryAt")
     if not next_retry:
         return True
@@ -571,8 +579,9 @@ def _is_stale_unprocessed_row(row: Dict[str, Any], now_dt: datetime) -> bool:
         return False
 
     status = (row.get("processingStatus") or "").strip()
-    # Include states that can get stuck during outages or manual transitions.
-    if status not in {"Pending", "Failed", "Processing", "Not started", "Speaker Review"}:
+    # Failed rows are terminal until an operator sets forceRerun — never auto-requeue
+    # them, otherwise a 404/validation error becomes an infinite retry loop.
+    if status not in {"Pending", "Processing", "Not started", "Speaker Review"}:
         return False
 
     # Prefer last attempt timestamp; fall back to meeting date if needed.
@@ -652,7 +661,10 @@ async def _process_retry_row(row: Dict[str, Any]) -> None:
 
     try:
         if not external_id:
-            raise RuntimeError("Missing external meeting id")
+            # Phrased to match terminal_markers ("missing required") so this
+            # classifies as terminal rather than RETRYABLE_UNKNOWN — a row with
+            # no external ID will never succeed on its own and needs operator fix.
+            raise RuntimeError("Missing required external meeting id")
         transcript = await _fetch_cached_transcript(row_id)
         if transcript:
             logger.info(f"Using cached transcript snapshot for meeting {row_id}; Fireflies fetch skipped")
