@@ -96,52 +96,85 @@ app.post('/webhook/fireflies', async (req, res) => {
 
   if (payload.eventType === 'Transcription completed') {
     try {
-      console.log('Fetching transcript from Fireflies...');
-      const transcript = await getTranscript(payload.meetingId);
-
-      if (!transcript) {
-        throw new Error('Transcript not found');
+      if (!payload.meetingId) {
+        return res.status(400).json({ error: 'meetingId missing from webhook payload' });
       }
 
-      console.log(`Fetched transcript: ${transcript.title}`);
       // Queue-first design:
-      // 1) Upsert a durable row in Meeting Register
-      // 2) Let the retry worker process asynchronously
-      // This prevents dropped work when API credits are temporarily unavailable.
-      const meetingDate = transcript.date
-        ? new Date(transcript.date).toISOString().split('T')[0]
-        : new Date().toISOString().split('T')[0];
-      // Auto-extract externalMeetingId if missing from transcriptSource
-      let externalMeetingId = transcript.id || payload.meetingId;
-      if (!externalMeetingId && transcript.transcript_url) {
-        const match = transcript.transcript_url.match(/\/view\/([A-Z0-9]+)/);
-        externalMeetingId = match ? match[1] : '';
-      }
-      
+      // 1) Always create/update a Meeting Register row keyed on the Fireflies meetingId.
+      //    This guarantees no meeting is dropped — even when Fireflies API is unpaid,
+      //    rate-limited, or otherwise unreachable at webhook time.
+      // 2) Best-effort enrich the row with transcript metadata + cache the full transcript
+      //    snapshot. If the fetch fails, the durable retry worker will fetch later when
+      //    Fireflies recovers (see agent/main.py:_fetch_cached_transcript fallback path).
+      const todayDate = new Date().toISOString().split('T')[0];
+      // title/meetingDate go in createOnlyFields so a duplicate webhook for an
+      // already-processed meeting cannot overwrite real data with placeholders.
       const upsertPayload = {
-        externalMeetingId: externalMeetingId,
-        title: transcript.title || 'Untitled Meeting',
-        meetingDate,
+        externalMeetingId: payload.meetingId,
         meetingFormat: 'Virtual',
         processingStatus: 'Pending',
-        transcriptSource: transcript.transcript_url || '',
         retryCount: 0,
         retrySource: 'fireflies_webhook',
         nextRetryAt: new Date().toISOString(),
         forceRerun: false,
+        createOnlyFields: {
+          title: 'Awaiting Fireflies transcript',
+          meetingDate: todayDate,
+        },
       };
       const upsertResponse = await axios.post(
         `http://127.0.0.1:${PORT}/api/meeting-register/upsert-by-external`,
         upsertPayload,
         { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
       );
+      const meetingRegisterId = upsertResponse.data?.id;
       console.log('Meeting queued/upserted:', upsertResponse.data);
-      if (upsertResponse.data?.id) {
-        try {
-          await cacheTranscriptSnapshot(upsertResponse.data.id, transcript);
-          console.log(`Transcript cache stored for meeting register ${upsertResponse.data.id}`);
-        } catch (cacheError) {
-          console.warn('Transcript cache storage failed; durable retries may need Fireflies:', cacheError.message);
+
+      let transcript = null;
+      try {
+        console.log('Fetching transcript from Fireflies...');
+        transcript = await getTranscript(payload.meetingId);
+      } catch (fetchError) {
+        console.warn(
+          `Fireflies fetch deferred for ${payload.meetingId}; durable retry worker will fetch later. ` +
+          `Error: ${fetchError.message}`
+        );
+      }
+
+      if (transcript) {
+        console.log(`Fetched transcript: ${transcript.title}`);
+        const meetingDate = transcript.date
+          ? new Date(transcript.date).toISOString().split('T')[0]
+          : todayDate;
+        // Auto-extract externalMeetingId if missing from transcriptSource
+        let externalMeetingId = transcript.id || payload.meetingId;
+        if (!externalMeetingId && transcript.transcript_url) {
+          const match = transcript.transcript_url.match(/\/view\/([A-Z0-9]+)/);
+          externalMeetingId = match ? match[1] : payload.meetingId;
+        }
+
+        if (meetingRegisterId) {
+          try {
+            await axios.patch(
+              `http://127.0.0.1:${PORT}/api/meeting-register/${meetingRegisterId}`,
+              {
+                title: transcript.title || 'Untitled Meeting',
+                meetingDate,
+                transcriptSource: transcript.transcript_url || '',
+              },
+              { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+            );
+          } catch (patchError) {
+            console.warn('Failed to enrich register row with transcript metadata:', patchError.message);
+          }
+
+          try {
+            await cacheTranscriptSnapshot(meetingRegisterId, transcript);
+            console.log(`Transcript cache stored for meeting register ${meetingRegisterId}`);
+          } catch (cacheError) {
+            console.warn('Transcript cache storage failed; durable retries will refetch from Fireflies:', cacheError.message);
+          }
         }
       }
 
@@ -153,7 +186,7 @@ app.post('/webhook/fireflies', async (req, res) => {
         deferred: false,
         error: null,
       };
-      if (ENABLE_IMMEDIATE_PROCESSING) {
+      if (ENABLE_IMMEDIATE_PROCESSING && transcript) {
         console.log('Immediate processing is enabled; forwarding transcript to Claude Agent...');
         try {
           await axios.post(

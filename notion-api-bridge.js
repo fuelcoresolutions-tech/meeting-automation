@@ -262,11 +262,11 @@ router.get('/meeting-register/by-external/:externalMeetingId', async (req, res) 
 // Upsert queue row from transcript webhook payload.
 router.post('/meeting-register/upsert-by-external', async (req, res) => {
   try {
-    const { externalMeetingId, ...rest } = req.body || {};
+    const { externalMeetingId, createOnlyFields, ...rest } = req.body || {};
     if (!externalMeetingId) {
       return res.status(400).json({ error: 'externalMeetingId is required' });
     }
-    const result = await upsertMeetingRegisterByExternalId(externalMeetingId, rest);
+    const result = await upsertMeetingRegisterByExternalId(externalMeetingId, rest, createOnlyFields || {});
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Error upserting meeting register entry:', error.message);
