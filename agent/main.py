@@ -158,7 +158,17 @@ RETRY_BACKOFF_SECONDS = [
     ).split(",") if v.strip()
 ]
 STALE_REQUEUE_HOURS = int(os.getenv("STALE_REQUEUE_HOURS", "24"))
+
+# Auto-backfill: periodically check Fireflies for meetings the webhook missed
+# (e.g. during an outage) and queue them. Skips dates with existing Notion rows
+# so manual entries are never duplicated.
+ENABLE_AUTO_BACKFILL = os.getenv("ENABLE_AUTO_BACKFILL", "true").lower() == "true"
+AUTO_BACKFILL_INTERVAL_HOURS = int(os.getenv("AUTO_BACKFILL_INTERVAL_HOURS", "24"))
+AUTO_BACKFILL_LOOKBACK_DAYS = int(os.getenv("AUTO_BACKFILL_LOOKBACK_DAYS", "14"))
+AUTO_BACKFILL_INITIAL_DELAY_SECONDS = int(os.getenv("AUTO_BACKFILL_INITIAL_DELAY_SECONDS", "600"))
+
 _retry_worker_task: Optional[asyncio.Task] = None
+_auto_backfill_task: Optional[asyncio.Task] = None
 _provider_outages: Dict[str, Dict[str, Any]] = {}
 
 
@@ -505,6 +515,150 @@ async def _fetch_fireflies_transcript(external_meeting_id: str) -> Dict[str, Any
     if isinstance(raw_date, (int, float)):
         transcript["date"] = datetime.fromtimestamp(raw_date / 1000, tz=timezone.utc).isoformat()
     return transcript
+
+
+async def _list_fireflies_transcripts(page_size: int = 50, max_pages: int = 4) -> List[Dict[str, Any]]:
+    """List recent Fireflies transcripts (id, title, date, duration), paginated."""
+    if not FIREFLY_API_KEY:
+        raise RuntimeError("FIREFLY_API_KEY is missing")
+    query = """
+    query Transcripts($limit: Int, $skip: Int) {
+      transcripts(limit: $limit, skip: $skip) { id title date duration }
+    }
+    """
+    all_transcripts: List[Dict[str, Any]] = []
+    skip = 0
+    async with httpx.AsyncClient() as client:
+        for _ in range(max_pages):
+            resp = await client.post(
+                "https://api.fireflies.ai/graphql",
+                json={"query": query, "variables": {"limit": page_size, "skip": skip}},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {FIREFLY_API_KEY}",
+                },
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("errors"):
+                err = data["errors"][0]
+                raise RuntimeError(f"Fireflies list failed: {err.get('message', 'unknown')}")
+            batch = (data.get("data") or {}).get("transcripts") or []
+            if not batch:
+                break
+            all_transcripts.extend(batch)
+            if len(batch) < page_size:
+                break
+            skip += page_size
+    return all_transcripts
+
+
+def _coerce_iso_date(raw: Any) -> Optional[str]:
+    """Return YYYY-MM-DD for a Fireflies date value (ms epoch or ISO string)."""
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, (int, float)):
+            return datetime.fromtimestamp(raw / 1000, tz=timezone.utc).date().isoformat()
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date().isoformat()
+    except Exception:
+        return None
+
+
+async def _queue_meeting_for_backfill(transcript: Dict[str, Any]) -> None:
+    """Queue a missing Fireflies meeting via the upsert endpoint."""
+    meeting_date = _coerce_iso_date(transcript.get("date")) or datetime.now(timezone.utc).date().isoformat()
+    payload = {
+        "externalMeetingId": transcript["id"],
+        "meetingFormat": "Virtual",
+        "processingStatus": "Pending",
+        "retryCount": 0,
+        "retrySource": "auto_backfill",
+        "nextRetryAt": _now_iso(),
+        "forceRerun": False,
+        "createOnlyFields": {
+            "title": transcript.get("title") or "Untitled Meeting",
+            "meetingDate": meeting_date,
+        },
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{NOTION_API_BASE}/api/meeting-register/upsert-by-external",
+            json=payload,
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+
+
+async def _run_auto_backfill_pass() -> Dict[str, int]:
+    """Find Fireflies meetings missing from Notion and queue them.
+
+    Skips Fireflies meetings whose date already has any Notion row, so manual
+    entries are never duplicated. Only true gaps (typically: webhooks lost
+    during a Fireflies outage) are backfilled.
+    """
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=AUTO_BACKFILL_LOOKBACK_DAYS)
+    transcripts = await _list_fireflies_transcripts()
+
+    rows = await _fetch_meeting_register_rows()
+    existing_ext_ids = {(r.get("externalMeetingId") or "").strip() for r in rows if r.get("externalMeetingId")}
+    existing_dates = {(r.get("meetingDate") or "")[:10] for r in rows if r.get("meetingDate")}
+
+    queued = 0
+    skipped_existing_id = 0
+    skipped_existing_date = 0
+    skipped_too_old = 0
+    failed = 0
+    for t in transcripts:
+        iso_date = _coerce_iso_date(t.get("date"))
+        if iso_date and datetime.fromisoformat(iso_date).replace(tzinfo=timezone.utc) < cutoff_dt:
+            skipped_too_old += 1
+            continue
+        if t.get("id") in existing_ext_ids:
+            skipped_existing_id += 1
+            continue
+        if iso_date and iso_date in existing_dates:
+            skipped_existing_date += 1
+            continue
+        try:
+            await _queue_meeting_for_backfill(t)
+            queued += 1
+            logger.info(f"Auto-backfill queued {t.get('id')} ({iso_date}) {t.get('title')}")
+        except Exception as e:
+            failed += 1
+            logger.warning(f"Auto-backfill failed for {t.get('id')}: {e}")
+    return {
+        "queued": queued,
+        "skipped_existing_id": skipped_existing_id,
+        "skipped_existing_date": skipped_existing_date,
+        "skipped_too_old": skipped_too_old,
+        "failed": failed,
+        "total_seen": len(transcripts),
+    }
+
+
+async def _auto_backfill_loop():
+    """Periodic discovery: queue Fireflies meetings the webhook missed."""
+    logger.info(
+        f"Auto-backfill loop started (interval={AUTO_BACKFILL_INTERVAL_HOURS}h, "
+        f"lookback={AUTO_BACKFILL_LOOKBACK_DAYS}d)"
+    )
+    await asyncio.sleep(AUTO_BACKFILL_INITIAL_DELAY_SECONDS)
+    while True:
+        try:
+            outage = _get_active_provider_outage()
+            if outage:
+                logger.info(
+                    f"Auto-backfill skipped — {outage.get('provider')} hold active until "
+                    f"{outage.get('until_iso')}"
+                )
+            else:
+                stats = await _run_auto_backfill_pass()
+                logger.info(f"Auto-backfill cycle complete: {stats}")
+        except Exception as e:
+            logger.warning(f"Auto-backfill cycle failed: {e}")
+        await asyncio.sleep(AUTO_BACKFILL_INTERVAL_HOURS * 3600)
 
 
 async def _fetch_cached_transcript(row_id: str) -> Optional[Dict[str, Any]]:
@@ -928,17 +1082,23 @@ async def get_cost_summary():
 
 @app.on_event("startup")
 async def start_retry_worker():
-    """Start durable retry loop on server boot (feature-flagged)."""
-    global _retry_worker_task
+    """Start durable retry loop and auto-backfill loop on server boot (feature-flagged)."""
+    global _retry_worker_task, _auto_backfill_task
     if ENABLE_DURABLE_RETRY_WORKER and _retry_worker_task is None:
         _retry_worker_task = asyncio.create_task(_retry_worker_loop())
         logger.info("Durable retry worker enabled")
+    if ENABLE_AUTO_BACKFILL and _auto_backfill_task is None:
+        _auto_backfill_task = asyncio.create_task(_auto_backfill_loop())
+        logger.info("Auto-backfill loop enabled")
 
 
 @app.on_event("shutdown")
 async def stop_retry_worker():
-    """Stop durable retry loop on shutdown."""
-    global _retry_worker_task
+    """Stop background loops on shutdown."""
+    global _retry_worker_task, _auto_backfill_task
     if _retry_worker_task:
         _retry_worker_task.cancel()
         _retry_worker_task = None
+    if _auto_backfill_task:
+        _auto_backfill_task.cancel()
+        _auto_backfill_task = None
