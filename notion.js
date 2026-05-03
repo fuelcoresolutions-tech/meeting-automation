@@ -219,7 +219,35 @@ export async function updatePerson(personId, updates) {
  * @param {string} taskData.description - Task description
  */
 export async function createTask(taskData) {
-  const { name, status, priority, dueDate, projectId, parentTaskId, description, definitionOfDone, departmentIds, peopleIds } = taskData;
+  const { name, status, priority, dueDate, projectId, parentTaskId, description, definitionOfDone, departmentIds, peopleIds, meetingRegisterId } = taskData;
+
+  // Idempotency: when called for a specific meeting register row, attach a
+  // provenance marker to the description and dedupe by (name, marker). On
+  // retry after a partial Claude failure (e.g. credits ran out mid-loop),
+  // the same task is returned instead of duplicated.
+  const meetingMarker = meetingRegisterId ? `[mreg:${meetingRegisterId}]` : null;
+  if (meetingMarker) {
+    try {
+      const existing = await notion.databases.query({
+        database_id: DATABASES.tasks,
+        filter: {
+          and: [
+            { property: 'Name', title: { equals: name } },
+            { property: 'Description', rich_text: { contains: meetingMarker } },
+          ],
+        },
+        page_size: 1,
+      });
+      if (existing.results.length > 0) {
+        const hit = existing.results[0];
+        console.log(`Task "${name}" already exists for meeting ${meetingRegisterId} (page ${hit.id}) — reusing`);
+        return { id: hit.id, reused: true };
+      }
+    } catch (lookupError) {
+      // Lookup failure should not block creation — fall through.
+      console.warn(`Task dedupe lookup failed (continuing with create): ${lookupError.message}`);
+    }
+  }
 
   const properties = {
     Name: {
@@ -260,16 +288,17 @@ export async function createTask(taskData) {
     };
   }
 
-  if (description) {
-    properties.Description = {
-      rich_text: [
-        {
-          text: {
-            content: description.slice(0, 2000)
-          }
-        }
-      ]
-    };
+  if (description || meetingMarker) {
+    const segments = [];
+    if (description) {
+      segments.push({ text: { content: description.slice(0, 2000) } });
+    }
+    if (meetingMarker) {
+      // Separate rich_text segment so the marker stays under Notion's per-segment
+      // character limit and is easy to filter on for dedupe lookups.
+      segments.push({ text: { content: `\n\n${meetingMarker}` } });
+    }
+    properties.Description = { rich_text: segments };
   }
 
   if (projectId) {

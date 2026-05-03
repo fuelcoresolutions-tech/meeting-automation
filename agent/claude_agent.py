@@ -4,6 +4,7 @@ import httpx
 import logging
 import anthropic as _anthropic
 from datetime import datetime
+from typing import Optional
 from anthropic import Anthropic
 from prompts.system_prompt import build_system_prompt
 from long_meeting_processor import process_long_meeting, estimate_tokens
@@ -336,13 +337,17 @@ TOOLS = [
 
 
 async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = None,
-                       validator: OutputValidator = None, context_section: str = "") -> str:
+                       validator: OutputValidator = None, context_section: str = "",
+                       meeting_register_id: Optional[str] = None) -> str:
     """Execute a tool and return the result as a string.
 
     Args:
         projects_cache: Session-scoped dict for caching get_projects results.
         validator: OutputValidator instance for cross-checking write operations.
         context_section: Formatted Notion context for the validator.
+        meeting_register_id: Notion meeting register row ID. When provided,
+            create_task / create_subtask attach a provenance marker so a retry
+            after partial failure can dedupe instead of creating duplicates.
     """
     # ── Validate write operations before executing ──
     write_tools = {"create_meeting_note", "create_task", "create_subtask",
@@ -427,11 +432,13 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                         "projectId": tool_input.get("project_id"),
                         "departmentIds": tool_input.get("department_ids", []),
                         "peopleIds": tool_input.get("people_ids", []),
+                        "meetingRegisterId": meeting_register_id,
                     },
                     timeout=30.0
                 )
                 result = _parse_create_response(response, "create_task")
-                return f"Created task '{tool_input.get('name')}' (ID: {result.get('id')})"
+                action = "Reused existing" if result.get("reused") else "Created"
+                return f"{action} task '{tool_input.get('name')}' (ID: {result.get('id')})"
 
             elif tool_name == "create_subtask":
                 response = await client.post(
@@ -447,11 +454,13 @@ async def execute_tool(tool_name: str, tool_input: dict, projects_cache: dict = 
                         "projectId": tool_input.get("project_id"),
                         "departmentIds": tool_input.get("department_ids", []),
                         "peopleIds": tool_input.get("people_ids", []),
+                        "meetingRegisterId": meeting_register_id,
                     },
                     timeout=30.0
                 )
                 result = _parse_create_response(response, "create_subtask")
-                return f"Created subtask '{tool_input.get('name')}' (ID: {result.get('id')})"
+                action = "Reused existing" if result.get("reused") else "Created"
+                return f"{action} subtask '{tool_input.get('name')}' (ID: {result.get('id')})"
 
             elif tool_name == "create_meeting_register":
                 response = await client.post(
@@ -553,7 +562,37 @@ async def _call_with_retry(client, **kwargs):
             await asyncio.sleep(delay)
 
 
-async def process_meeting_transcript(transcript_data: dict) -> dict:
+async def _claude_preflight_check(client) -> None:
+    """Cheap 1-token Haiku call to verify Anthropic credits + auth before
+    starting a long agent run. If credits are dry or auth is broken, fails
+    here instead of mid-flow — preventing partial Notion writes that would
+    need manual cleanup. Errors propagate so the outer handler classifies
+    them and installs the appropriate provider hold (billing → 6h, auth → 3h).
+    """
+    haiku_model = os.getenv("CLAUDE_HAIKU_MODEL", "claude-haiku-4-5-20251001")
+    logger.info(f"Pre-flight credit/auth check via {haiku_model}…")
+    try:
+        await asyncio.to_thread(
+            client.messages.create,
+            model=haiku_model,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "."}],
+        )
+        logger.info("Pre-flight check passed — Anthropic API ready.")
+    except _anthropic.BadRequestError as e:
+        # 400 with "credit balance is too low" lands here. Re-raise so the
+        # outer handler in main.py classifies as billing and installs a hold.
+        logger.warning(f"Pre-flight failed (BadRequest, likely billing): {e}")
+        raise
+    except _anthropic.AuthenticationError as e:
+        logger.warning(f"Pre-flight failed (auth): {e}")
+        raise
+    except _anthropic.PermissionDeniedError as e:
+        logger.warning(f"Pre-flight failed (permission): {e}")
+        raise
+
+
+async def process_meeting_transcript(transcript_data: dict, meeting_register_id: Optional[str] = None) -> dict:
     """
     Process a meeting transcript using Claude API with optimized token usage.
 
@@ -608,6 +647,11 @@ async def process_meeting_transcript(transcript_data: dict) -> dict:
 
     # Initialize Anthropic client (shared across passes)
     client = Anthropic()
+
+    # Pre-flight credit/auth check — fail fast BEFORE any Notion writes if the
+    # account is out of credits or otherwise blocked. Saves cleanup work from
+    # partial-state failures (orphan tasks, missing meeting note).
+    await _claude_preflight_check(client)
 
     # Determine processing method based on transcript length
     processing_method = "standard"
@@ -864,7 +908,8 @@ Do NOT call get_projects() - the project list is already provided above."""
                 logger.info(f"Executing tool: {tool_use.name} with input: {tool_use.input}")
                 result = await execute_tool(
                     tool_use.name, tool_use.input, projects_cache,
-                    validator=validator, context_section=context_section
+                    validator=validator, context_section=context_section,
+                    meeting_register_id=meeting_register_id,
                 )
                 logger.info(f"Tool result: {result[:200]}...")
                 if result.startswith("TOOL_ERROR["):
