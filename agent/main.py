@@ -833,7 +833,7 @@ async def _process_retry_row(row: Dict[str, Any]) -> None:
                     f"Transcript cache store failed for meeting {row_id}; "
                     f"future retries may still need Fireflies. Error: {cache_error}"
                 )
-        result = await process_meeting_transcript(transcript)
+        result = await process_meeting_transcript(transcript, meeting_register_id=row_id)
         if not result.get("success"):
             raise RuntimeError(result.get("error") or "Unknown processing error")
 

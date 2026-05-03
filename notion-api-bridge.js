@@ -77,7 +77,7 @@ router.get('/tasks', async (req, res) => {
 router.post('/tasks', async (req, res) => {
   try {
     const result = await createTask(req.body);
-    res.json({ id: result.id, success: true });
+    res.json({ id: result.id, success: true, reused: !!result.reused });
   } catch (error) {
     console.error('Error creating task:', error.message);
     res.status(500).json({ error: error.message });
